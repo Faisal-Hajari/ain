@@ -128,9 +128,14 @@ hostname is baked into a payload. The frontend plays it in a `<video>` it owns,
 so the URL has to be a playlist: a player page would render as a broken video,
 and a format other than HLS will not play at all.
 
-Counts have to agree: the `camera-status` stats, the `camera-downtime` series
-and the grid's own `status` values are three views of one truth, and a user
-reads them side by side.
+Counts have to agree: the `camera-status` stats, that card's own trend and the
+grid's `status` values are three views of one truth, and a user reads them on
+the same screen.
+
+A `stat-group` trend may chart a subset of the card's stats - Feed health draws
+only the "No signal" line, because a flat total and its complement would say the
+same thing three times - but every series must name one of the stats, and its
+last point must be the number that stat prints.
 
 ---
 

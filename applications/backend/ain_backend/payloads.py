@@ -222,34 +222,73 @@ def camera_status(seed_key: str) -> dict[str, bool]:
 
 
 def _build_camera_status(context: _Context) -> models.StatGroupPayload:
-	"""How many feeds are reporting frames right now."""
+	"""How many feeds are reporting frames, now and over the window.
+
+	Args:
+		context: The request the card is being built for.
+
+	Returns:
+		The three numbers, and behind them the one line worth watching:
+		how many were down. A total that never moves and an online
+		count that is only the total minus this line would say nothing
+		twice. The last point is now, so it carries the number the
+		stats print rather than another roll of the dice.
+	"""
 	status = camera_status(context.seed_key)
 	online = sum(status.values())
 	total = len(status)
+	offline = total - online
+
+	walk = _walk(
+		context.rand,
+		context.x_labels[-_TREND_POINTS:],
+		'offline',
+		0,
+		max(3, offline),
+	)
+	points: list[models.Point] = [
+		{
+			'x': str(point['x']),
+			'offline': min(total, int(_numeric(point, 'offline'))),
+		}
+		for point in walk
+	]
+	points[-1] = {'x': points[-1]['x'], 'offline': offline}
+
+	stats = [
+		models.Stat(
+			id='total', label=context.text(i18n.TOTAL), value=str(total)
+		),
+		models.Stat(
+			id='online',
+			label=context.text(i18n.ONLINE),
+			value=str(online),
+			severity=models.Severity.OK,
+		),
+		models.Stat(
+			id='offline',
+			label=context.text(i18n.OFFLINE),
+			value=str(offline),
+			severity=(
+				models.Severity.OK
+				if offline == 0
+				else models.Severity.CRITICAL
+			),
+		),
+	]
 	return models.StatGroupPayload(
-		stats=[
-			models.Stat(
-				id='total',
-				label=context.text(i18n.TOTAL),
-				value=str(total),
-			),
-			models.Stat(
-				id='online',
-				label=context.text(i18n.ONLINE),
-				value=str(online),
-				severity=models.Severity.OK,
-			),
-			models.Stat(
-				id='offline',
-				label=context.text(i18n.OFFLINE),
-				value=str(total - online),
-				severity=(
-					models.Severity.OK
-					if online == total
-					else models.Severity.CRITICAL
-				),
-			),
-		]
+		stats=stats,
+		trend=models.TrendPayload(
+			series=[
+				models.SeriesDef(
+					id='offline',
+					label=context.text(i18n.OFFLINE),
+					# The red slot: this line is the bad news.
+					color_index=4,
+				)
+			],
+			points=points,
+		),
 	)
 
 
@@ -333,12 +372,6 @@ def _build_series(context: _Context) -> models.SeriesPayload:
 		spec.value_min,
 		spec.value_max,
 	)
-	if spec.id == 'camera-downtime':
-		# The last point is now, so it has to be the number Feed health
-		# is printing rather than another roll of the dice.
-		status = camera_status(context.seed_key)
-		offline = len(status) - sum(status.values())
-		points[-1] = {**points[-1], 'value': offline}
 	return models.SeriesPayload(
 		series=[
 			models.SeriesDef(

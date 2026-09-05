@@ -120,16 +120,20 @@ def assert_kpi_payload(data: dict):
 def assert_stat_group_payload(data: dict):
 	"""Stat values are strings, and any trend agrees with them."""
 	assert data['stats']
+	stats = {stat['id']: stat for stat in data['stats']}
 	for stat in data['stats']:
 		assert isinstance(stat['value'], str)
 	trend = data.get('trend')
 	if trend is None:
 		return
-	stat_ids = [stat['id'] for stat in data['stats']]
-	assert [series['id'] for series in trend['series']] == stat_ids
+	# A card may chart a subset of its numbers - Feed health draws only
+	# the line worth watching - but every line still has to name one of
+	# them, and to end on the number that stat is printing.
+	series_ids = [series['id'] for series in trend['series']]
+	assert series_ids and set(series_ids) <= set(stats)
 	last = trend['points'][-1]
-	for stat in data['stats']:
-		assert str(round(float(last[stat['id']]))) in stat['value']
+	for series_id in series_ids:
+		assert str(round(float(last[series_id]))) in stats[series_id]['value']
 
 
 def assert_camera_grid_payload(data: dict):
@@ -318,15 +322,22 @@ def test_every_camera_has_a_recording_behind_it(client):
 	assert len(paths) == len(catalogue.CAMERAS)
 
 
-def test_the_three_camera_cards_agree_on_who_is_down(client):
-	"""Feed health, the downtime line and the grid share one roll."""
-	stats = {
-		stat['id']: stat['value']
-		for stat in fetch(client, 'camera-status')['data']['stats']
-	}
+def test_feed_health_agrees_with_the_grid(client):
+	"""The health card and the tiles share one roll of who is up."""
+	health = fetch(client, 'camera-status')['data']
+	stats = {stat['id']: stat['value'] for stat in health['stats']}
 	feeds = fetch(client, 'camera-feeds')['data']['feeds']
 	offline = [feed for feed in feeds if feed['status'] == 'offline']
 	assert stats['total'] == str(len(feeds))
 	assert stats['offline'] == str(len(offline))
-	downtime = fetch(client, 'camera-downtime')['data']['points']
-	assert str(round(float(downtime[-1]['value']))) == stats['offline']
+
+
+def test_feed_health_carries_the_downtime_over_the_window(client):
+	"""The card is one card: the numbers now, and downtime behind them."""
+	health = fetch(client, 'camera-status')['data']
+	trend = health['trend']
+	assert [series['id'] for series in trend['series']] == ['offline']
+	total = int(health['stats'][0]['value'])
+	assert trend['points']
+	for point in trend['points']:
+		assert 0 <= point['offline'] <= total

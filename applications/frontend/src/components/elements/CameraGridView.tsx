@@ -67,7 +67,7 @@ export function CameraGridView({ data }: { data: CameraGridPayload }) {
                   type="button"
                   onClick={() => zoom.set(feed.id)}
                   aria-label={`${t.expand}: ${feed.label}`}
-                  className="absolute inset-0 cursor-zoom-in rounded-(--radius-card) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+                  className="absolute inset-0 rounded-(--radius-card) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
                 />
               </Card>
             </li>
@@ -77,7 +77,12 @@ export function CameraGridView({ data }: { data: CameraGridPayload }) {
 
       {zoomed ? (
         <Dialog open size="lg" title={zoomed.label} closeLabel={t.close} onClose={() => zoom.set(null)}>
-          <div className="aspect-video bg-canvas">
+          {/* Capped rather than left to the aspect ratio: a 16:9 box this wide
+              is taller than the dialog body, which scrolls past 70vh. The cap
+              is that 70vh less the padding and the caption under it, so this
+              fits at any viewport height rather than at a guessed one.
+              object-contain letterboxes whatever the cap takes off. */}
+          <div className="aspect-video max-h-[calc(70vh_-_7rem)] bg-canvas">
             <CameraPlayer feed={zoomed} className="object-contain" />
           </div>
           <p className="mt-3 text-sm text-muted">{zoomed.zone}</p>
@@ -90,9 +95,10 @@ export function CameraGridView({ data }: { data: CameraGridPayload }) {
 /**
  * One feed, or its placeholder while it is down.
  *
- * No `controls`: a wall of cameras is watched, not scrubbed, and every tile is
- * pinned to the newest segment anyway. `muted` and `playsInline` are what let a
- * tile start on its own, without a click per camera.
+ * No `controls`, and no picture-in-picture: a wall of cameras is watched, not
+ * scrubbed, and a tile popped out of the wall is a tile the wall no longer
+ * shows. `muted` and `playsInline` are what let a tile start on its own,
+ * without a click per camera.
  */
 function CameraPlayer({ feed, className }: { feed: CameraFeed; className?: string }) {
   const ref = useRef<HTMLVideoElement>(null)
@@ -134,5 +140,14 @@ function CameraPlayer({ feed, className }: { feed: CameraFeed; className?: strin
     )
   }
 
-  return <video ref={ref} muted autoPlay playsInline className={clsx('size-full', className)} />
+  return (
+    <video
+      ref={ref}
+      muted
+      autoPlay
+      playsInline
+      disablePictureInPicture
+      className={clsx('size-full', className)}
+    />
+  )
 }

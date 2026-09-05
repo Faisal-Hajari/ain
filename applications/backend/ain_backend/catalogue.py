@@ -264,23 +264,11 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		id='camera-status',
 		title=i18n.Text('Feed health', 'حالة البث'),
 		description=i18n.Text(
-			'Cameras reporting frames right now.',
-			'الكاميرات التي ترسل بثاً في الوقت الحالي.',
+			'Cameras reporting frames now, and how many were down.',
+			'الكاميرات التي ترسل بثاً الآن، وعدد ما توقف منها.',
 		),
 		type=_Type.STAT_GROUP, kind=_Kind.MONITOR,
-		updates=_Cadence.REALTIME, span=2,
-	),
-	ElementSpec(
-		id='camera-downtime',
-		title=i18n.Text('Cameras down', 'الكاميرات المتوقفة'),
-		description=i18n.Text(
-			'Cameras with no signal over the selected range.',
-			'الكاميرات التي انقطعت إشارتها خلال النطاق المحدد.',
-		),
-		type=_Type.LINE, kind=_Kind.MONITOR,
-		updates=_Cadence.REALTIME, span=2,
-		unit=i18n.CAMERAS,
-		value_min=0, value_max=4,
+		updates=_Cadence.REALTIME, span=4,
 	),
 	ElementSpec(
 		id='camera-feeds',
@@ -353,7 +341,7 @@ SECTIONS: tuple[SectionSpec, ...] = (
 		description=i18n.Text(
 			'Cameras and camera feeds.', 'الكاميرات وبثّها المباشر.'
 		),
-		element_ids=('camera-status', 'camera-downtime', 'camera-feeds'),
+		element_ids=('camera-status', 'camera-feeds'),
 	),
 	SectionSpec(
 		id='alerts',
