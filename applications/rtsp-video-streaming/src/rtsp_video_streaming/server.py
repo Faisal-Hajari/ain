@@ -194,15 +194,23 @@ class RtspConnection:
         self._dropping_frame = False
 
     # -- wire I/O ---------------------------------------------------------
-    def _backlogged(self) -> bool:
-        """Whether the client is too far behind to be sent anything more."""
+    def _note_transport_gone(self) -> bool:
+        """Latch the connection closed if its transport has gone, and say so."""
         if self._closed:
             return True
         transport = self.writer.transport
         if transport is None or transport.is_closing():
             self._closed = True
-            return True
-        return transport.get_write_buffer_size() > MAX_TCP_BACKLOG_BYTES
+        return self._closed
+
+    def _backlogged(self) -> bool:
+        """Whether the client is too far behind to be sent anything more.
+
+        Only meaningful once ``_note_transport_gone`` has answered False, which
+        is what guarantees there is still a transport to ask.
+        """
+        buffered = self.writer.transport.get_write_buffer_size()
+        return buffered > MAX_TCP_BACKLOG_BYTES
 
     def _write(self, channel: int, payload: bytes) -> None:
         try:
@@ -216,7 +224,7 @@ class RtspConnection:
         Audio packets and RTCP reports each stand alone, so losing one costs
         exactly itself.
         """
-        if self._backlogged():
+        if self._note_transport_gone() or self._backlogged():
             return
         self._write(channel, payload)
 
@@ -228,10 +236,9 @@ class RtspConnection:
         Dropping on to the end of the access unit costs no more bandwidth and
         leaves a clean gap, so playback resumes at the next frame.
         """
-        if self._backlogged():
-            self._dropping_frame = not ends_frame(packet)
+        if self._note_transport_gone():
             return
-        if self._dropping_frame:
+        if self._backlogged() or self._dropping_frame:
             self._dropping_frame = not ends_frame(packet)
             return
         self._write(channel, packet)
@@ -278,15 +285,18 @@ class RtspConnection:
             try:
                 head = first + await self.reader.readuntil(b"\r\n\r\n")
             except (asyncio.LimitOverrunError, ValueError) as exc:
-                return self._reject(f"request head over {MAX_REQUEST_BYTES} bytes: {exc}")
+                self._reject(f"request head over {MAX_REQUEST_BYTES} bytes: {exc}")
+                return None
             try:
                 request = parse_request_head(head)
             except ParseError as exc:
-                return self._reject(f"bad request: {exc}")
+                self._reject(f"bad request: {exc}")
+                return None
             try:
                 length = self._body_length(request)
             except ValueError as exc:
-                return self._reject(str(exc))
+                self._reject(str(exc))
+                return None
             body = await self.reader.readexactly(length) if length else b""
             return request, body
 
@@ -301,7 +311,7 @@ class RtspConnection:
         if length < 0:
             raise ValueError(f"negative Content-Length {raw!r}")
         if length > MAX_BODY_BYTES:
-            raise ValueError(f"Content-Length {length} over the {MAX_BODY_BYTES} byte limit")
+            raise ValueError(f"Content-Length {length} over the {MAX_BODY_BYTES} limit")
         return length
 
     def _reject(self, reason: str) -> None:

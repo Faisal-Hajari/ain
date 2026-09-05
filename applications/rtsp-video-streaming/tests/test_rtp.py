@@ -117,7 +117,8 @@ def test_a_segment_never_steps_the_clock_backwards():
 
 def _report_mapping(report):
     """The (NTP seconds, RTP timestamp) pair a client builds its clock from."""
-    _, _, _, _, seconds, fraction, rtp_ts, _, _ = struct.unpack("!BBHIIIIII", report)
+    fields = struct.unpack("!BBHIIIIII", report)
+    _, _, _, _, seconds, fraction, rtp_ts, _, _ = fields
     return seconds + fraction / (1 << 32), rtp_ts
 
 

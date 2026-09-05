@@ -9,6 +9,13 @@ on:
 permissions:
   contents: read
 
+# A rapid push sequence on a PR should not queue several full matrices; only the
+# newest commit's result is worth anything. Mirrors build-images.yml, but
+# cancelling is safe here: these runs publish nothing.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   discover:
     name: discover apps
@@ -25,12 +32,21 @@ jobs:
           shopt -s nullglob
 
           apps=()
+          skipped=()
           for dir in applications/*/; do
             name=${dir#applications/}
             name=${name%/}
             if [[ -d "${dir}tests" ]]; then
               apps+=("$name")
+            else
+              skipped+=("$name")
             fi
+          done
+
+          # Say so out loud, the way build-images.yml does for a missing
+          # Dockerfile: an app quietly excluded from CI is an app with no CI.
+          for name in ${skipped[@]+"${skipped[@]}"}; do
+            echo "::warning::applications/$name has no tests - not tested"
           done
 
           # No test suite anywhere means the workflow is silently vacuous; a
@@ -43,6 +59,14 @@ jobs:
           matrix=$(printf '%s\n' "${apps[@]}" \
             | jq -R -s -c '[splits("\n") | select(length > 0)]')
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Test suites"
+            printf -- '- %s\n' "${apps[@]}"
+            for name in ${skipped[@]+"${skipped[@]}"}; do
+              printf -- '- %s (no tests)\n' "$name"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
 
   test:
     name: ${{ matrix.app }} on py${{ matrix.python }}

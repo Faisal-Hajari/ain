@@ -94,6 +94,10 @@ class Headers(Dict[str, str]):
         self._keys.clear()
         super().clear()
 
+    def copy(self) -> "Headers":
+        """A real ``Headers``: ``dict.copy`` would drop the casing index."""
+        return Headers(self)
+
 
 @dataclass
 class Request:

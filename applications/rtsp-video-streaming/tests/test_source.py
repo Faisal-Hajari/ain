@@ -124,7 +124,7 @@ async def test_stop_terminates_the_running_encoder(tmp_path, videos):
     assert source.current_file is None
 
 
-async def test_a_stray_datagram_does_not_raise_out_of_the_receive_callback(tmp_path):
+async def test_a_stray_datagram_does_not_escape_the_receive_callback(tmp_path):
     """Anything that is not RTPv2 is counted and dropped, not propagated."""
     source = MediaSource(Playlist(tmp_path), EncodingConfig())
     source.publish_rtp(VIDEO, b"not an rtp packet at all")
@@ -139,7 +139,7 @@ async def test_a_stray_datagram_does_not_raise_out_of_the_receive_callback(tmp_p
 
 
 async def test_an_encoder_that_ignores_sigterm_is_killed(tmp_path, monkeypatch):
-    """Otherwise the playlist waits forever on the process it just asked to stop."""
+    """Otherwise the playlist waits forever on a process it asked to stop."""
     (tmp_path / "clip.mp4").write_bytes(b"x")
     # Ignore SIGTERM, then sit still. Only SIGKILL ends this.
     encoder = stub_encoder(tmp_path, "trap '' TERM\nwhile :; do sleep 0.05; done\n")

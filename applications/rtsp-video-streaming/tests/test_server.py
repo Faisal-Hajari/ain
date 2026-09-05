@@ -313,7 +313,7 @@ async def test_negative_content_length_is_400(server):
 
 
 async def test_an_absurd_content_length_is_refused_before_reading_it(server):
-    """Otherwise a client can make the server wait on a gigabyte it never sends."""
+    """Otherwise a client can make us wait on a gigabyte it never sends."""
     client = await Client.connect(server)
     client.writer.write(
         b"SET_PARAMETER " + client.url.encode() + b" RTSP/1.0\r\n"
@@ -442,8 +442,10 @@ def test_a_lagging_client_is_cut_at_a_frame_boundary():
     connection = RtspConnection(None, None, writer)
 
     def send(marker):
-        connection.write_video(0, struct.pack("!BBHII", 0x80, 96 | (0x80 if marker else 0),
-                                              1, 0, 1) + b"nal")
+        header = struct.pack(
+            "!BBHII", 0x80, 96 | (0x80 if marker else 0), 1, 0, 1
+        )
+        connection.write_video(0, header + b"nal")
 
     # A frame arrives as three packets, the last one marked. The backlog fills
     # partway through, so the rest of that frame goes too...
@@ -458,3 +460,33 @@ def test_a_lagging_client_is_cut_at_a_frame_boundary():
     send(False)
     send(True)
     assert len(writer.written) == 3
+
+
+def test_a_closed_transport_stops_writes_on_both_paths():
+    """The latch belongs to _note_transport_gone; _backlogged only answers."""
+    from rtsp_video_streaming.server import RtspConnection
+
+    class ClosingTransport:
+        def is_closing(self):
+            return True
+
+        def get_write_buffer_size(self):  # pragma: no cover - must not be reached
+            raise AssertionError("backlog asked after the transport went away")
+
+    class FakeWriter:
+        def __init__(self):
+            self.transport = ClosingTransport()
+            self.written = []
+
+        def get_extra_info(self, _name):
+            return ("127.0.0.1", 1)
+
+        def write(self, data):  # pragma: no cover - must not be reached
+            self.written.append(data)
+
+    writer = FakeWriter()
+    connection = RtspConnection(None, None, writer)
+    connection.write_packet(0, b"rtcp")
+    connection.write_video(0, rtp_packet())
+    assert writer.written == []
+    assert connection._closed

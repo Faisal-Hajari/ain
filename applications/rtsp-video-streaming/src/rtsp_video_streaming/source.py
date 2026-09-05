@@ -39,6 +39,11 @@ STALL_TIMEOUT_SECONDS = 15.0
 WATCHDOG_POLL_SECONDS = 1.0
 # How long an encoder gets to honour SIGTERM before it is killed outright.
 TERMINATE_TIMEOUT_SECONDS = 5.0
+# How long to keep draining a dead encoder's stderr. The process is gone by the
+# time this runs, so there is nothing more coming; this only covers a grandchild
+# holding the pipe open. Together with the terminate timeout it has to stay well
+# inside "docker stop"'s ten second grace period, or cleanup is cut short.
+STDERR_DRAIN_TIMEOUT_SECONDS = 1.0
 
 
 class Subscriber(Protocol):
@@ -84,13 +89,20 @@ class _Endpoints:
         return transport.get_extra_info("sockname")[1]
 
     @property
-    def ports(self) -> Dict[str, Optional[int]]:
-        return {
-            "video_port": self._port(self.video_rtp),
-            "video_rtcp_port": self._port(self.video_rtcp),
-            "audio_port": self._port(self.audio_rtp),
-            "audio_rtcp_port": self._port(self.audio_rtcp),
-        }
+    def video_port(self) -> int:
+        return self._port(self.video_rtp)
+
+    @property
+    def video_rtcp_port(self) -> int:
+        return self._port(self.video_rtcp)
+
+    @property
+    def audio_port(self) -> Optional[int]:
+        return self._port(self.audio_rtp)
+
+    @property
+    def audio_rtcp_port(self) -> Optional[int]:
+        return self._port(self.audio_rtcp)
 
     def close(self) -> None:
         for transport in (self.video_rtp, self.video_rtcp, self.audio_rtp, self.audio_rtcp):
@@ -201,7 +213,8 @@ class MediaSource:
         """
         self._terminate_process()
         try:
-            await asyncio.wait_for(asyncio.shield(process.wait()), TERMINATE_TIMEOUT_SECONDS)
+            exited = asyncio.shield(process.wait())
+            await asyncio.wait_for(exited, TERMINATE_TIMEOUT_SECONDS)
             return
         except asyncio.TimeoutError:
             pass
@@ -276,9 +289,12 @@ class MediaSource:
             command = build_command(
                 path,
                 self.config,
+                video_port=endpoints.video_port,
+                video_rtcp_port=endpoints.video_rtcp_port,
+                audio_port=endpoints.audio_port,
+                audio_rtcp_port=endpoints.audio_rtcp_port,
                 source_has_audio=info.has_audio,
                 duration=info.duration,
-                **endpoints.ports,
             )
             now = asyncio.get_running_loop().time()
             if self._epoch is None:
@@ -305,9 +321,8 @@ class MediaSource:
         self._process = process
         self._last_video_at = loop.time()
         stderr_task = asyncio.create_task(self._drain_stderr(process, path))
-        waiter = asyncio.ensure_future(process.wait())
         try:
-            await self._wait_with_watchdog(waiter, process, path)
+            await self._wait_with_watchdog(process, path)
         except asyncio.CancelledError:
             await self._stop_process(process)
             raise
@@ -315,7 +330,8 @@ class MediaSource:
             self._process = None
             # A stray grandchild could hold the pipe open; never block on it.
             try:
-                await asyncio.wait_for(asyncio.shield(stderr_task), timeout=5)
+                drained = asyncio.shield(stderr_task)
+                await asyncio.wait_for(drained, timeout=STDERR_DRAIN_TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
                 stderr_task.cancel()
 
@@ -325,7 +341,7 @@ class MediaSource:
             # Guard against spinning at full speed over a folder of broken files.
             await self._sleep(FAILED_FILE_BACKOFF_SECONDS)
 
-    async def _wait_with_watchdog(self, waiter: "asyncio.Future", process, path: Path) -> None:
+    async def _wait_with_watchdog(self, process, path: Path) -> None:
         """Wait for the encoder, but do not let one bad file freeze the loop.
 
         A file whose video ends while another output keeps running (silence
@@ -333,6 +349,7 @@ class MediaSource:
         otherwise hold the playlist forever.
         """
         loop = asyncio.get_running_loop()
+        waiter = asyncio.ensure_future(process.wait())
         while not waiter.done():
             await asyncio.wait({waiter}, timeout=WATCHDOG_POLL_SECONDS)
             if waiter.done() or self._stopping.is_set():

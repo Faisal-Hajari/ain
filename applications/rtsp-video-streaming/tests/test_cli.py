@@ -32,7 +32,7 @@ def test_parser_defaults_match_the_documented_ones():
 
 
 def test_the_port_can_come_from_the_environment(monkeypatch):
-    """The container healthcheck reads the same variable, so they cannot drift."""
+    """The container health check reads it too, so the two cannot drift."""
     monkeypatch.setenv("RTSP_PORT", "9554")
     assert cli.build_parser().parse_args(["/videos"]).port == 9554
 
@@ -45,7 +45,8 @@ def test_an_unusable_rtsp_port_falls_back_to_the_default(monkeypatch, value):
 
 def test_an_explicit_port_still_beats_the_environment(monkeypatch):
     monkeypatch.setenv("RTSP_PORT", "9554")
-    assert cli.build_parser().parse_args(["/videos", "--port", "1234"]).port == 1234
+    args = cli.build_parser().parse_args(["/videos", "--port", "1234"])
+    assert args.port == 1234
 
 
 def test_advertised_host_passes_through_a_specific_bind_address():
@@ -67,13 +68,13 @@ def test_advertised_host_falls_back_to_loopback_with_no_route(monkeypatch):
     assert cli.advertised_host("0.0.0.0") == "127.0.0.1"
 
 
-def test_run_reports_a_missing_folder_instead_of_starting(tmp_path, monkeypatch):
+def test_run_reports_a_missing_folder(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "require_ffmpeg", lambda config: None)
     args = cli.build_parser().parse_args([str(tmp_path / "nope")])
     assert asyncio.run(cli.run(args)) == 2
 
 
-def test_run_reports_a_missing_ffmpeg_instead_of_starting(tmp_path, monkeypatch):
+def test_run_reports_a_missing_ffmpeg(tmp_path, monkeypatch):
     def missing(config):
         raise cli.FFmpegNotFound("no ffmpeg on PATH")
 
