@@ -42,6 +42,21 @@ class CameraSpec:
 	id: str
 	zone: i18n.Text
 
+	@property
+	def stream_url(self) -> str:
+		"""Where a browser plays this camera.
+
+		Returns:
+			The camera's page on the stream server, which serves HLS the
+			browser can play. The dashboard's own origin proxies this
+			path straight through - nginx in the frontend image, the
+			dev-server proxy under vite - so the tile plays a
+			same-origin URL and no hostname is baked into a payload.
+			The path is the id without its leading zero, which is what
+			the recordings are named.
+		"""
+		return f'/cam{int(self.id)}/'
+
 
 @dataclasses.dataclass(frozen=True)
 class ElementSpec:
@@ -92,7 +107,7 @@ CAMERAS: tuple[CameraSpec, ...] = (
 		'Outdoor street frontage and parking bays.',
 		'واجهة الشارع ومواقف السيارات.',
 	)),
-	CameraSpec('07', i18n.Text(
+	CameraSpec('09', i18n.Text(
 		'Outdoor parking area and street frontage.',
 		'منطقة المواقف الخارجية وواجهة الشارع.',
 	)),
@@ -130,7 +145,7 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		),
 		type=_Type.STAT_GROUP, kind=_Kind.MONITOR,
 		updates=_Cadence.REALTIME, span=2,
-		cameras=('03', '04', '06', '07', '10'),
+		cameras=('03', '04', '06', '09', '10'),
 		unit=i18n.PEOPLE,
 		value_min=8, value_max=60,
 	),
@@ -257,6 +272,18 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		updates=_Cadence.REALTIME, span=2,
 	),
 	ElementSpec(
+		id='camera-downtime',
+		title=i18n.Text('Cameras down', 'الكاميرات المتوقفة'),
+		description=i18n.Text(
+			'Cameras with no signal over the selected range.',
+			'الكاميرات التي انقطعت إشارتها خلال النطاق المحدد.',
+		),
+		type=_Type.LINE, kind=_Kind.MONITOR,
+		updates=_Cadence.REALTIME, span=2,
+		unit=i18n.CAMERAS,
+		value_min=0, value_max=4,
+	),
+	ElementSpec(
 		id='camera-feeds',
 		title=i18n.Text('Camera feeds', 'بث الكاميرات'),
 		description=i18n.Text(
@@ -327,7 +354,7 @@ SECTIONS: tuple[SectionSpec, ...] = (
 		description=i18n.Text(
 			'Cameras and camera feeds.', 'الكاميرات وبثّها المباشر.'
 		),
-		element_ids=('camera-status', 'camera-feeds'),
+		element_ids=('camera-status', 'camera-downtime', 'camera-feeds'),
 	),
 	SectionSpec(
 		id='alerts',

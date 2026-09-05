@@ -25,6 +25,7 @@ _DURATION = formatting.ValueFormat.DURATION
 _HOURS = tuple(f'{hour:02d}' for hour in range(8, 22))
 _DWELL_BUCKETS = ('0-10', '10-20', '20-30', '30-45', '45-60', '60+')
 _MONTH_DAYS = 30
+_OFFLINE_CHANCE = 0.12
 _TREND_POINTS = 12
 
 # How long a card's data is considered current, which is what makes
@@ -50,6 +51,7 @@ class _Context:
 	spec: catalogue.ElementSpec
 	locale: i18n.Locale
 	rand: random.Random
+	seed_key: str
 	range_key: str
 	x_labels: list[str]
 
@@ -201,12 +203,29 @@ def _build_kpi(context: _Context) -> models.KpiPayload:
 	)
 
 
+def camera_status(seed_key: str) -> dict[str, bool]:
+	"""Rolls which cameras are reporting frames.
+
+	Args:
+		seed_key: The filters, language excluded, as a stable key.
+
+	Returns:
+		True per camera id that is up. Feed health, the downtime chart
+		and the grid all read this one roll, so the three can never
+		disagree about how many cameras are down.
+	"""
+	rand = _rng('cameras', seed_key)
+	return {
+		camera.id: rand.random() > _OFFLINE_CHANCE
+		for camera in catalogue.CAMERAS
+	}
+
+
 def _build_camera_status(context: _Context) -> models.StatGroupPayload:
 	"""How many feeds are reporting frames right now."""
-	online = sum(
-		1 for _ in catalogue.CAMERAS if context.rand.random() > 0.12
-	)
-	total = len(catalogue.CAMERAS)
+	status = camera_status(context.seed_key)
+	online = sum(status.values())
+	total = len(status)
 	return models.StatGroupPayload(
 		stats=[
 			models.Stat(
@@ -307,19 +326,26 @@ def _build_stat_group(context: _Context) -> models.StatGroupPayload:
 def _build_series(context: _Context) -> models.SeriesPayload:
 	"""A line over the window's x axis."""
 	spec = context.spec
+	points = _walk(
+		context.rand,
+		context.x_labels,
+		'value',
+		spec.value_min,
+		spec.value_max,
+	)
+	if spec.id == 'camera-downtime':
+		# The last point is now, so it has to be the number Feed health
+		# is printing rather than another roll of the dice.
+		status = camera_status(context.seed_key)
+		offline = len(status) - sum(status.values())
+		points[-1] = {**points[-1], 'value': offline}
 	return models.SeriesPayload(
 		series=[
 			models.SeriesDef(
 				id='value', label=context.text(spec.title), color_index=0
 			)
 		],
-		points=_walk(
-			context.rand,
-			context.x_labels,
-			'value',
-			spec.value_min,
-			spec.value_max,
-		),
+		points=points,
 		x_label=context.text(
 			i18n.HOUR if context.range_key == 'today' else i18n.DAY
 		),
@@ -356,9 +382,10 @@ def _camera_label(camera_id: str, locale: i18n.Locale) -> str:
 
 def _build_camera_grid(context: _Context) -> models.CameraGridPayload:
 	"""Every camera tile, with its status and stream."""
+	status = camera_status(context.seed_key)
 	feeds = []
 	for camera in catalogue.CAMERAS:
-		online = context.rand.random() > 0.12
+		online = status[camera.id]
 		feeds.append(
 			models.CameraFeed(
 				id=camera.id,
@@ -368,11 +395,7 @@ def _build_camera_grid(context: _Context) -> models.CameraGridPayload:
 				status_label=context.text(
 					i18n.ONLINE if online else i18n.OFFLINE
 				),
-				stream_url=(
-					f'/api/cameras/{camera.id}/stream.m3u8'
-					if online
-					else None
-				),
+				stream_url=camera.stream_url if online else None,
 			)
 		)
 	return models.CameraGridPayload(feeds=feeds)
@@ -400,6 +423,7 @@ def _context(
 		spec=spec,
 		locale=locale,
 		rand=_rng(prefix, spec.id, seed_key),
+		seed_key=seed_key,
 		range_key=range_key,
 		x_labels=_x_labels(range_key, locale),
 	)

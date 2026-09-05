@@ -36,9 +36,12 @@ export default defineConfig(({ mode }) => {
     server: {
       host: true,
       port: 5173,
-      // The real backend serves /api.
+      // The real backend serves /api; MediaMTX serves /camNN/, the camera
+      // streams the tiles play. Both are proxied so a dev server and the
+      // nginx image put them at the same paths.
       proxy: {
         '/api': { target: env.VITE_API_TARGET ?? 'http://localhost:8000', changeOrigin: true },
+        '^/cam\\d+/': { target: env.VITE_CAMERA_TARGET ?? 'http://localhost:8888', changeOrigin: true },
       },
     },
   }

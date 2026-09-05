@@ -298,6 +298,35 @@ def test_deleting_an_absent_rule_is_still_204(client):
 
 
 def test_media_urls_answer_a_404_rather_than_hanging(client):
-	"""No route serves media, so the URLs the payloads link to 404."""
+	"""No route serves clips, so the URLs the payloads link to 404."""
 	assert client.get('/api/clips/congestion-count/0.mp4').status_code == 404
-	assert client.get('/api/cameras/03/stream.m3u8').status_code == 404
+
+
+def test_an_online_feed_carries_the_stream_the_browser_plays(client):
+	"""Streams are served next to the API, not by it."""
+	feeds = fetch(client, 'camera-feeds')['data']['feeds']
+	online = [feed for feed in feeds if feed['status'] == 'online']
+	assert online
+	for feed in online:
+		assert feed['streamUrl'].startswith('/cam')
+		assert feed['streamUrl'].endswith('/')
+
+
+def test_every_camera_has_a_recording_behind_it(client):
+	"""A camera id with no stream path is a tile that can never play."""
+	paths = {camera.stream_url for camera in catalogue.CAMERAS}
+	assert len(paths) == len(catalogue.CAMERAS)
+
+
+def test_the_three_camera_cards_agree_on_who_is_down(client):
+	"""Feed health, the downtime line and the grid share one roll."""
+	stats = {
+		stat['id']: stat['value']
+		for stat in fetch(client, 'camera-status')['data']['stats']
+	}
+	feeds = fetch(client, 'camera-feeds')['data']['feeds']
+	offline = [feed for feed in feeds if feed['status'] == 'offline']
+	assert stats['total'] == str(len(feeds))
+	assert stats['offline'] == str(len(offline))
+	downtime = fetch(client, 'camera-downtime')['data']['points']
+	assert str(round(float(downtime[-1]['value']))) == stats['offline']

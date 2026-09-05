@@ -3,9 +3,17 @@
 
 logLevel: info
 
-# Only RTSP is read from this server; the rest would bind ports nothing uses.
+# RTSP for anything that speaks it, HLS for the browser: a <video> cannot
+# open an RTSP URL, so the dashboard plays the HLS page this server hosts
+# at /<path>/. The rest would bind ports nothing uses.
 rtmp: false
-hls: false
+hls: true
+
+# MPEG-TS segments rather than the default Low-Latency HLS: LL-HLS wants
+# HTTPS and a session cookie the browser only keeps under one, and a
+# looping recording has no latency worth that. A couple of seconds behind
+# is what a wall of tiles wants anyway.
+hlsVariant: mpegts
 webrtc: false
 srt: false
 moq: false
@@ -20,11 +28,21 @@ paths:
   # still cost one encoder. It is stopped 10s after the last reader leaves.
   #
   # -stream_loop -1 loops the file inside ffmpeg, so the process never restarts
-  # and the stream has no seam to hide. -c copy remuxes the recording's own
-  # H.265 as-is: no re-encoding, so this stays cheap. A client that needs H.264
-  # is a -c:v libx264 here, not a server of our own.
+  # and the stream has no seam to hide. The recordings are H.265, which no
+  # browser plays over HLS, so this re-encodes to H.264; the files are 720p15
+  # already, so there is nothing to scale. -g 15 puts a keyframe every second,
+  # which is what lets HLS cut one-second segments.
+  #
+  # -rtsp_transport tcp on the way in is not optional: over UDP this hop drops
+  # packets even on loopback, and a dropped RTP packet is a dropped frame.
+  #
+  # ponytail: ten ultrafast libx264 encodes when every tile is open. They only
+  # start on demand, but a host that feels it wants a hardware encoder here
+  # (-c:v h264_nvenc / h264_vaapi) rather than a smaller grid.
   '~^cam\d+$':
     runOnDemand: >
       ffmpeg -hide_banner -loglevel error -stream_loop -1 -re
-      -i /videos/$MTX_PATH.mp4 -c copy -f rtsp rtsp://localhost:$RTSP_PORT/$MTX_PATH
+      -i /videos/$MTX_PATH.mp4 -an -c:v libx264 -preset ultrafast
+      -tune zerolatency -g 15 -f rtsp -rtsp_transport tcp
+      rtsp://localhost:$RTSP_PORT/$MTX_PATH
     runOnDemandRestart: yes
