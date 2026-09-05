@@ -113,3 +113,62 @@ def test_a_segment_never_steps_the_clock_backwards():
     rewriter.start_segment(0.01)  # anchor lands before the packets we just sent
     after = parse_header(rewriter.rewrite(packet(0, 0)))
     assert (after.timestamp - last) & MAX_U32 == (40 * 90000) // 1000
+
+
+def _report_mapping(report):
+    """The (NTP seconds, RTP timestamp) pair a client builds its clock from."""
+    _, _, _, _, seconds, fraction, rtp_ts, _, _ = struct.unpack("!BBHIIIIII", report)
+    return seconds + fraction / (1 << 32), rtp_ts
+
+
+def test_sender_reports_describe_one_line_across_files(monkeypatch):
+    """Every report must place RTP on the same NTP line, file after file.
+
+    A client rebuilds its mapping from the newest report, so two reports that
+    disagree move the whole timeline and playback jumps at the file switch.
+    Packets arrive at wall-clock times unrelated to the media clock -- the
+    encoder takes a moment to start and then bursts -- and the report must not
+    inherit that.
+    """
+    clock = [1000.0]
+    monkeypatch.setattr("rtsp_video_streaming.rtp.time.time", lambda: clock[0])
+
+    rewriter = RtpRewriter(8000, 8, gap_ms=20)
+    mappings = []
+    for segment in range(3):
+        # Each file is anchored to the shared epoch, one second apart...
+        rewriter.start_segment(float(segment))
+        # ...but its packets are forwarded late and in a burst, by a different
+        # amount every time, the way a restarted encoder really behaves.
+        clock[0] = 1000.0 + segment + 0.6 * (segment + 1)
+        for i in range(4):
+            rewriter.rewrite(packet(i, i * 160))
+        mappings.append(_report_mapping(rewriter.sender_report()))
+
+    reference_ntp, reference_rtp = mappings[0]
+    for ntp, rtp_ts in mappings[1:]:
+        rtp_advance = ((rtp_ts - reference_rtp) & MAX_U32) / 8000
+        assert ntp - reference_ntp == pytest.approx(rtp_advance, abs=1e-3)
+
+
+def test_sender_report_clock_survives_the_32_bit_wraparound(monkeypatch):
+    """A feed runs for days; the 90 kHz field on the wire wraps every 13 hours.
+
+    The NTP time in the report has to keep climbing across that wrap, so it
+    cannot be recovered by subtracting two wrapped 32-bit timestamps.
+    """
+    clock = [1000.0]
+    monkeypatch.setattr("rtsp_video_streaming.rtp.time.time", lambda: clock[0])
+
+    rewriter = RtpRewriter(90000, 96, ssrc=1, gap_ms=40)
+    rewriter.epoch_timestamp = MAX_U32 - 90000  # one second short of wrapping
+    rewriter.timestamp = rewriter.epoch_timestamp
+
+    ntp_times = []
+    for hour in range(4):  # 4 * 7 hours, so the 13.25 hour wrap is crossed twice
+        rewriter.start_segment(hour * 7 * 3600.0)
+        rewriter.rewrite(packet(hour, 0))
+        ntp_times.append(_report_mapping(rewriter.sender_report())[0])
+
+    steps = [b - a for a, b in zip(ntp_times, ntp_times[1:])]
+    assert steps == pytest.approx([7 * 3600.0] * 3, abs=1e-3)

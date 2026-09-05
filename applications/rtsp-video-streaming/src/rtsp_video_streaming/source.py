@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Protocol, Set
 
 from rtsp_video_streaming.ffmpeg import (
     AUDIO_CLOCK_RATE,
@@ -24,7 +25,7 @@ from rtsp_video_streaming.ffmpeg import (
     probe_media,
 )
 from rtsp_video_streaming.playlist import Playlist
-from rtsp_video_streaming.rtp import RtpRewriter
+from rtsp_video_streaming.rtp import InvalidPacket, RtpRewriter
 from rtsp_video_streaming.sdp import AUDIO, VIDEO
 
 log = logging.getLogger(__name__)
@@ -36,16 +37,20 @@ RTCP_INTERVAL_SECONDS = 5.0
 # current file and move to the next one.
 STALL_TIMEOUT_SECONDS = 15.0
 WATCHDOG_POLL_SECONDS = 1.0
+# How long an encoder gets to honour SIGTERM before it is killed outright.
+TERMINATE_TIMEOUT_SECONDS = 5.0
 
 
-class Subscriber:
-    """What the source needs from a playing RTSP session."""
+class Subscriber(Protocol):
+    """What the source needs from a playing RTSP session.
 
-    def deliver_rtp(self, kind: str, packet: bytes) -> None:  # pragma: no cover
-        raise NotImplementedError
+    Structural, not inherited: ``Session`` lives in the server and knows how to
+    put a packet on its own wire, which is the whole of the relationship.
+    """
 
-    def deliver_rtcp(self, kind: str, packet: bytes) -> None:  # pragma: no cover
-        raise NotImplementedError
+    def deliver_rtp(self, kind: str, packet: bytes) -> None: ...
+
+    def deliver_rtcp(self, kind: str, packet: bytes) -> None: ...
 
 
 class _RtpReceiver(asyncio.DatagramProtocol):
@@ -61,6 +66,36 @@ class _RtpReceiver(asyncio.DatagramProtocol):
 
 class _Discard(asyncio.DatagramProtocol):
     """Holds ffmpeg's RTCP port open so it does not get ICMP port-unreachable."""
+
+
+@dataclass
+class _Endpoints:
+    """The loopback sockets one encoder run pushes RTP and RTCP into."""
+
+    video_rtp: asyncio.DatagramTransport
+    video_rtcp: asyncio.DatagramTransport
+    audio_rtp: Optional[asyncio.DatagramTransport] = None
+    audio_rtcp: Optional[asyncio.DatagramTransport] = None
+
+    @staticmethod
+    def _port(transport: Optional[asyncio.DatagramTransport]) -> Optional[int]:
+        if transport is None:
+            return None
+        return transport.get_extra_info("sockname")[1]
+
+    @property
+    def ports(self) -> Dict[str, Optional[int]]:
+        return {
+            "video_port": self._port(self.video_rtp),
+            "video_rtcp_port": self._port(self.video_rtcp),
+            "audio_port": self._port(self.audio_rtp),
+            "audio_rtcp_port": self._port(self.audio_rtcp),
+        }
+
+    def close(self) -> None:
+        for transport in (self.video_rtp, self.video_rtcp, self.audio_rtp, self.audio_rtcp):
+            if transport is not None:
+                transport.close()
 
 
 class MediaSource:
@@ -85,6 +120,7 @@ class MediaSource:
             )
 
         self.current_file: Optional[Path] = None
+        self.invalid_packets = 0
         self._last_video_at = 0.0
         self._epoch: Optional[float] = None
         self._subscribers: Set[Subscriber] = set()
@@ -107,19 +143,24 @@ class MediaSource:
         """Renumber one encoder packet and fan it out to every playing client."""
         if kind == VIDEO:
             self._last_video_at = asyncio.get_running_loop().time()
-        rewritten = self.rewriters[kind].rewrite(packet)
-        self._fan_out(kind, rewritten, rtcp=False)
+        try:
+            rewritten = self.rewriters[kind].rewrite(packet)
+        except InvalidPacket as exc:
+            # The socket is bound to loopback, so this takes a local sender, but
+            # one stray datagram must not raise out of the receive callback once
+            # per packet for as long as it keeps arriving.
+            self.invalid_packets += 1
+            log.debug("discarding non-RTP datagram on the %s socket: %s", kind, exc)
+            return
+        self._fan_out(lambda subscriber: subscriber.deliver_rtp(kind, rewritten))
 
     def publish_rtcp(self, kind: str, packet: bytes) -> None:
-        self._fan_out(kind, packet, rtcp=True)
+        self._fan_out(lambda subscriber: subscriber.deliver_rtcp(kind, packet))
 
-    def _fan_out(self, kind: str, packet: bytes, rtcp: bool) -> None:
+    def _fan_out(self, deliver: Callable[[Subscriber], None]) -> None:
         for subscriber in list(self._subscribers):
             try:
-                if rtcp:
-                    subscriber.deliver_rtcp(kind, packet)
-                else:
-                    subscriber.deliver_rtp(kind, packet)
+                deliver(subscriber)
             except Exception:  # a broken client must not stall the loop
                 log.debug("dropping subscriber after delivery error", exc_info=True)
                 self._subscribers.discard(subscriber)
@@ -151,6 +192,26 @@ class MediaSource:
             except ProcessLookupError:  # pragma: no cover - already gone
                 pass
 
+    async def _stop_process(self, process) -> None:
+        """Ask the encoder to stop, then insist.
+
+        An ffmpeg that ignores SIGTERM would otherwise hold the playlist open
+        forever on an unbounded wait, which is the exact failure the stall
+        watchdog exists to prevent.
+        """
+        self._terminate_process()
+        try:
+            await asyncio.wait_for(asyncio.shield(process.wait()), TERMINATE_TIMEOUT_SECONDS)
+            return
+        except asyncio.TimeoutError:
+            pass
+        log.warning("ffmpeg ignored SIGTERM for %.0fs - killing it", TERMINATE_TIMEOUT_SECONDS)
+        try:
+            process.kill()
+        except ProcessLookupError:  # pragma: no cover - exited in the meantime
+            pass
+        await process.wait()
+
     # -- the loop ---------------------------------------------------------
     async def _run_loop(self) -> None:
         warned_empty = False
@@ -178,34 +239,36 @@ class MediaSource:
         except asyncio.TimeoutError:
             pass
 
-    async def _play_file(self, path: Path) -> None:
+    async def _open_endpoints(self) -> _Endpoints:
+        """Bind the loopback sockets the next encoder run will push into."""
         loop = asyncio.get_running_loop()
-        endpoints = []
-        try:
-            video_transport, _ = await loop.create_datagram_endpoint(
-                lambda: _RtpReceiver(lambda pkt: self.publish_rtp(VIDEO, pkt)),
+
+        async def receiver(kind: str) -> asyncio.DatagramTransport:
+            transport, _ = await loop.create_datagram_endpoint(
+                lambda: _RtpReceiver(lambda pkt: self.publish_rtp(kind, pkt)),
                 local_addr=("127.0.0.1", 0),
             )
-            endpoints.append(video_transport)
-            video_rtcp, _ = await loop.create_datagram_endpoint(
+            return transport
+
+        async def discard() -> asyncio.DatagramTransport:
+            transport, _ = await loop.create_datagram_endpoint(
                 _Discard, local_addr=("127.0.0.1", 0)
             )
-            endpoints.append(video_rtcp)
+            return transport
 
-            audio_port = audio_rtcp_port = None
+        endpoints = _Endpoints(video_rtp=await receiver(VIDEO), video_rtcp=await discard())
+        try:
             if self.config.audio:
-                audio_transport, _ = await loop.create_datagram_endpoint(
-                    lambda: _RtpReceiver(lambda pkt: self.publish_rtp(AUDIO, pkt)),
-                    local_addr=("127.0.0.1", 0),
-                )
-                endpoints.append(audio_transport)
-                audio_rtcp, _ = await loop.create_datagram_endpoint(
-                    _Discard, local_addr=("127.0.0.1", 0)
-                )
-                endpoints.append(audio_rtcp)
-                audio_port = audio_transport.get_extra_info("sockname")[1]
-                audio_rtcp_port = audio_rtcp.get_extra_info("sockname")[1]
+                endpoints.audio_rtp = await receiver(AUDIO)
+                endpoints.audio_rtcp = await discard()
+        except OSError:
+            endpoints.close()
+            raise
+        return endpoints
 
+    async def _play_file(self, path: Path) -> None:
+        endpoints = await self._open_endpoints()
+        try:
             info = MediaInfo(has_audio=True)
             if self.config.audio:
                 info = await asyncio.to_thread(probe_media, path, self.config)
@@ -213,12 +276,9 @@ class MediaSource:
             command = build_command(
                 path,
                 self.config,
-                video_port=video_transport.get_extra_info("sockname")[1],
-                video_rtcp_port=video_rtcp.get_extra_info("sockname")[1],
-                audio_port=audio_port,
-                audio_rtcp_port=audio_rtcp_port,
                 source_has_audio=info.has_audio,
                 duration=info.duration,
+                **endpoints.ports,
             )
             now = asyncio.get_running_loop().time()
             if self._epoch is None:
@@ -231,8 +291,7 @@ class MediaSource:
             await self._run_ffmpeg(command, path)
         finally:
             self.current_file = None
-            for transport in endpoints:
-                transport.close()
+            endpoints.close()
 
     async def _run_ffmpeg(self, command: List[str], path: Path) -> None:
         loop = asyncio.get_running_loop()
@@ -248,10 +307,9 @@ class MediaSource:
         stderr_task = asyncio.create_task(self._drain_stderr(process, path))
         waiter = asyncio.ensure_future(process.wait())
         try:
-            await self._wait_with_watchdog(waiter, path)
+            await self._wait_with_watchdog(waiter, process, path)
         except asyncio.CancelledError:
-            self._terminate_process()
-            await waiter
+            await self._stop_process(process)
             raise
         finally:
             self._process = None
@@ -267,7 +325,7 @@ class MediaSource:
             # Guard against spinning at full speed over a folder of broken files.
             await self._sleep(FAILED_FILE_BACKOFF_SECONDS)
 
-    async def _wait_with_watchdog(self, waiter: "asyncio.Future", path: Path) -> None:
+    async def _wait_with_watchdog(self, waiter: "asyncio.Future", process, path: Path) -> None:
         """Wait for the encoder, but do not let one bad file freeze the loop.
 
         A file whose video ends while another output keeps running (silence
@@ -285,7 +343,7 @@ class MediaSource:
                     path.name,
                     self.stall_timeout,
                 )
-                self._terminate_process()
+                await self._stop_process(process)
                 break
         await waiter
 

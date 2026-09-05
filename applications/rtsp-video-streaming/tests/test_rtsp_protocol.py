@@ -86,3 +86,41 @@ def test_response_sets_content_length():
 def test_interleaved_frame_layout():
     frame = interleaved_frame(1, b"abc")
     assert frame == b"$\x01\x00\x03abc"
+
+
+def test_headers_stay_case_insensitive_when_entries_are_removed():
+    """Both mappings have to agree, or lookups and membership disagree."""
+    headers = Headers({"CSeq": "4", "Session": "abc"})
+
+    del headers["cseq"]
+    assert "CSeq" not in headers and "cseq" not in headers
+    assert headers.get("CSeq") is None
+    with pytest.raises(KeyError):
+        headers["CSeq"]
+
+    assert headers.pop("SESSION") == "abc"
+    assert "Session" not in headers
+    assert headers.pop("Session", "fallback") == "fallback"
+    with pytest.raises(KeyError):
+        headers.pop("Session")
+
+    headers["Content-Length"] = "3"
+    headers.clear()
+    assert "content-length" not in headers and len(headers) == 0
+
+
+def test_headers_update_keeps_the_case_insensitive_index():
+    headers = Headers()
+    headers.update({"CSeq": "1"})
+    headers.update([("Session", "abc")])
+    headers.update(Public="OPTIONS")
+    assert headers["cseq"] == "1"
+    assert headers["session"] == "abc"
+    assert headers["public"] == "OPTIONS"
+
+
+def test_a_rewritten_header_keeps_only_the_newest_casing():
+    headers = Headers({"cseq": "1"})
+    headers["CSeq"] = "2"
+    assert list(headers) == ["CSeq"]
+    assert headers["cseq"] == "2"

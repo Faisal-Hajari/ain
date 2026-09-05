@@ -1,0 +1,71 @@
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    name: discover apps
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.scan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: scan
+        name: find applications with tests
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          apps=()
+          for dir in applications/*/; do
+            name=${dir#applications/}
+            name=${name%/}
+            if [[ -d "${dir}tests" ]]; then
+              apps+=("$name")
+            fi
+          done
+
+          # No test suite anywhere means the workflow is silently vacuous; a
+          # green run that ran nothing is worse than a red one.
+          if [[ ${#apps[@]} -eq 0 ]]; then
+            echo "::error::no applications/*/tests found - nothing to test"
+            exit 1
+          fi
+
+          matrix=$(printf '%s\n' "${apps[@]}" \
+            | jq -R -s -c '[splits("\n") | select(length > 0)]')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: ${{ matrix.app }} on py${{ matrix.python }}
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJSON(needs.discover.outputs.matrix) }}
+        # The floor and the ceiling: 3.9 is what pyproject claims to support,
+        # 3.12 is what the published image runs.
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: install
+        working-directory: applications/${{ matrix.app }}
+        run: pip install -e '.[dev]'
+
+      - name: pytest
+        working-directory: applications/${{ matrix.app }}
+        run: pytest -q

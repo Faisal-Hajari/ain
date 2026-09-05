@@ -1,13 +1,32 @@
 """Loop behaviour of the media source, driven by a stub encoder."""
 
 import asyncio
+import struct
 from pathlib import Path
 
 import pytest
 
 from rtsp_video_streaming.ffmpeg import EncodingConfig
 from rtsp_video_streaming.playlist import Playlist
+from rtsp_video_streaming.sdp import VIDEO
 from rtsp_video_streaming.source import MediaSource
+
+
+def rtp_packet(seq=1, timestamp=0, payload=b"frame"):
+    return struct.pack("!BBHII", 0x80, 96, seq, timestamp, 0x1234) + payload
+
+
+class _Recorder:
+    """A subscriber that just keeps what it was handed."""
+
+    def __init__(self, delivered):
+        self.delivered = delivered
+
+    def deliver_rtp(self, kind, packet):
+        self.delivered.append((kind, packet))
+
+    def deliver_rtcp(self, kind, packet):
+        self.delivered.append((kind, packet))
 
 
 def stub_encoder(tmp_path: Path, body: str) -> Path:
@@ -103,3 +122,38 @@ async def test_stop_terminates_the_running_encoder(tmp_path, videos):
     assert await wait_for(lambda: source.current_file is not None)
     await asyncio.wait_for(source.stop(), timeout=5)
     assert source.current_file is None
+
+
+async def test_a_stray_datagram_does_not_raise_out_of_the_receive_callback(tmp_path):
+    """Anything that is not RTPv2 is counted and dropped, not propagated."""
+    source = MediaSource(Playlist(tmp_path), EncodingConfig())
+    source.publish_rtp(VIDEO, b"not an rtp packet at all")
+    source.publish_rtp(VIDEO, b"\x40" + b"\x00" * 20)  # RTP version 1
+    assert source.invalid_packets == 2
+
+    delivered = []
+    source.subscribe(_Recorder(delivered))
+    source.rewriters[VIDEO].start_segment()
+    source.publish_rtp(VIDEO, rtp_packet())
+    assert len(delivered) == 1  # still working afterwards
+
+
+async def test_an_encoder_that_ignores_sigterm_is_killed(tmp_path, monkeypatch):
+    """Otherwise the playlist waits forever on the process it just asked to stop."""
+    (tmp_path / "clip.mp4").write_bytes(b"x")
+    # Ignore SIGTERM, then sit still. Only SIGKILL ends this.
+    encoder = stub_encoder(tmp_path, "trap '' TERM\nwhile :; do sleep 0.05; done\n")
+
+    monkeypatch.setattr("rtsp_video_streaming.source.TERMINATE_TIMEOUT_SECONDS", 0.5)
+    source = MediaSource(
+        Playlist(tmp_path, extensions=(".mp4",)),
+        EncodingConfig(ffmpeg=str(encoder), audio=False),
+        stall_timeout=0.5,
+    )
+    await source.start()
+    try:
+        assert await wait_for(lambda: source.current_file is not None)
+        # The stall watchdog fires, SIGTERM is ignored, and the kill has to land.
+        assert await wait_for(lambda: played(tmp_path).count("clip.mp4") >= 2, timeout=15)
+    finally:
+        await source.stop()

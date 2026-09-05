@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import contextlib
 import logging
+import os
 import signal
 import socket
 import sys
@@ -38,15 +39,45 @@ def parse_size(value: str):
         )
 
 
+DEFAULT_PORT = 8554
+
+
+def _env_port() -> int:
+    """The port from $RTSP_PORT, ignoring a value that is not a port."""
+    raw = os.environ.get("RTSP_PORT")
+    if raw is None:
+        return DEFAULT_PORT
+    try:
+        port = int(raw)
+    except ValueError:
+        log.warning("ignoring RTSP_PORT=%r: not a number", raw)
+        return DEFAULT_PORT
+    if not 1 <= port <= 65535:
+        log.warning("ignoring RTSP_PORT=%r: out of range", raw)
+        return DEFAULT_PORT
+    return port
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rtsp-video-streaming",
         description="Stream a folder of video files over RTSP, looping forever.",
     )
     parser.add_argument("folder", type=Path, help="folder containing the video files")
-    parser.add_argument("--host", default="0.0.0.0", help="bind address (default: %(default)s)")
-    parser.add_argument("--port", type=int, default=8554, help="RTSP port (default: %(default)s)")
-    parser.add_argument("--path", default="live", help="stream path (default: %(default)s)")
+    parser.add_argument(
+        "--host", default=os.environ.get("RTSP_HOST", "0.0.0.0"),
+        help="bind address, or $RTSP_HOST (default: %(default)s)",
+    )
+    # The container's healthcheck has to probe the port the server actually
+    # binds, and it cannot read the command line; both read $RTSP_PORT instead.
+    parser.add_argument(
+        "--port", type=int, default=_env_port(),
+        help="RTSP port, or $RTSP_PORT (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--path", default=os.environ.get("RTSP_PATH", "live"),
+        help="stream path, or $RTSP_PATH (default: %(default)s)",
+    )
     parser.add_argument(
         "--size", type=parse_size, default=(1280, 720),
         help="output resolution WxH, or 'source' to keep each file's own "
@@ -85,7 +116,10 @@ def advertised_host(host: str) -> str:
         return host
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
-            probe.connect(("8.8.8.8", 80))  # no traffic sent; just picks a route
+            # Connecting a UDP socket sends nothing; it only asks the kernel
+            # which local address it would route from. TEST-NET-1 (RFC 5737) is
+            # reserved for documentation, so no real host is named here.
+            probe.connect(("192.0.2.1", 80))
             return probe.getsockname()[0]
     except OSError:
         return "127.0.0.1"

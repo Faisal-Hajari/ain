@@ -3,10 +3,12 @@
 A video source for AIN: point it at a folder of video files and it serves them
 over RTSP as one continuous, never-ending stream, the way a camera would. When
 the last file finishes it starts again from the first, and clients that are
-already watching just keep watching — they never see the switch.
+already watching keep watching — they never see the switch.
 
 Useful for feeding recorded footage into the analytics pipeline, and for giving
 the dashboard something live to show without a real camera on the network.
+
+To serve a folder, point the command at it:
 
 ```bash
 rtsp-video-streaming /path/to/videos
@@ -19,40 +21,52 @@ Play it with anything that speaks RTSP:
 ffplay -rtsp_transport tcp rtsp://192.168.1.10:8554/live
 ```
 
+Or with VLC:
+
 ```bash
 vlc rtsp://192.168.1.10:8554/live
 ```
 
 ## Run it with Docker
 
-The image is built and published by
-[`build-images.yml`](../../.github/workflows/build-images.yml) on every push to
-`main`:
+[`build-images.yml`](../../.github/workflows/build-images.yml) builds and
+publishes the image on every push to `main`. To run it:
 
 ```bash
 docker run --rm -p 8554:8554 -v /path/to/videos:/videos:ro ghcr.io/faisal-hajari/ain/rtsp-video-streaming:latest
 ```
 
-Anything after the image name is passed straight to the CLI, so the folder
-inside the container and every option below can be overridden:
+The container passes anything after the image name straight to the CLI, so you
+can override the folder inside the container and every option below:
 
 ```bash
 docker run --rm -p 8554:8554 -v /path/to/videos:/videos:ro ghcr.io/faisal-hajari/ain/rtsp-video-streaming:latest /videos --size 1920x1080 --fps 30
 ```
 
-Prefer `-rtsp_transport tcp` in clients when the server runs in a container:
-RTP over UDP goes out from ports that are not published.
+When the server runs in a container, use `-rtsp_transport tcp` in clients: RTP
+over UDP goes out from ports that are not published.
+
+To change the port, set `RTSP_PORT`. Both the server and the container's health
+check read it, so one variable keeps the two in step:
+
+```bash
+docker run --rm -p 9554:9554 -e RTSP_PORT=9554 -v /path/to/videos:/videos:ro ghcr.io/faisal-hajari/ain/rtsp-video-streaming:latest
+```
 
 ## Install locally
 
-Requires Python 3.9+ and ffmpeg (with `libx264`) on the PATH.
+The server needs Python 3.9 or later and ffmpeg (with `libx264`) on the PATH.
+
+To install ffmpeg:
 
 ```bash
 sudo apt install ffmpeg   # or: brew install ffmpeg
 ```
 
+Then install the package from the application directory:
+
 ```bash
-pip install -e applications/rtsp-video-streaming
+cd applications/rtsp-video-streaming && pip install -e .
 ```
 
 ## How it works
@@ -64,7 +78,7 @@ pip install -e applications/rtsp-video-streaming
   with its own sequence numbers and timestamps. The server renumbers all of them
   onto a single continuous RTP stream anchored to one shared clock, so a client
   connected during file 1 keeps playing through files 2, 3, … and back around.
-- **Uniform output.** Every file is normalised to the same resolution, frame
+- **Uniform output.** Every file is normalized to the same resolution, frame
   rate and codecs, because clients negotiate the stream once and that
   description has to stay true for the whole loop. Mixed resolutions, frame
   rates, codecs and containers in the folder are fine.
@@ -78,12 +92,14 @@ pip install -e applications/rtsp-video-streaming
 
 ## Usage
 
+The command takes a folder and a set of encoding options:
+
 ```
 rtsp-video-streaming FOLDER [options]
 
-  --host ADDR         bind address (default: 0.0.0.0)
-  --port PORT         RTSP port (default: 8554)
-  --path PATH         stream path (default: live)
+  --host ADDR         bind address, or $RTSP_HOST (default: 0.0.0.0)
+  --port PORT         RTSP port, or $RTSP_PORT (default: 8554)
+  --path PATH         stream path, or $RTSP_PATH (default: live)
   --size WxH          output resolution, or 'source' (default: 1280x720)
   --fps N             output frame rate (default: 25)
   --bitrate RATE      video bitrate (default: 2M)
@@ -116,10 +132,21 @@ reconnect to pick up the new format.
 `OPTIONS`, `DESCRIBE`, `SETUP`, `PLAY`, `PAUSE`, `TEARDOWN`, `GET_PARAMETER`,
 `SET_PARAMETER`, over unicast RTP — either interleaved on the TCP control
 connection (`RTP/AVP/TCP`, the most firewall-friendly option) or over UDP
-(`RTP/AVP`). Video is H.264, audio is G.711 A-law. RTCP sender reports are sent
-so clients can keep audio and video in sync. Multicast is not supported.
+(`RTP/AVP`). Video is H.264, audio is G.711 A-law. The server sends RTCP sender
+reports so clients can keep audio and video in sync. Multicast is not supported.
+
+## Security
+
+The server has no authentication: anyone who can reach the port can watch the
+stream. It binds `0.0.0.0` by default, so on a machine with a public interface
+that means anyone at all. Run it on a trusted network, bind it to a specific
+interface with `--host`, or put it behind something that does the access control
+for you. It is a source of recorded footage for a lab and a dashboard, not a
+camera to expose to the internet.
 
 ## Development
+
+To install the development dependencies and run the tests:
 
 ```bash
 cd applications/rtsp-video-streaming && pip install -e '.[dev]' && pytest

@@ -284,3 +284,177 @@ async def test_interleaved_data_from_the_client_is_skipped(server):
     status, _, _ = await client.request("GET_PARAMETER")
     assert status == 200
     await client.close()
+
+
+# -- malformed requests ----------------------------------------------------
+async def test_malformed_content_length_is_400_not_a_traceback(server):
+    """A body length we cannot parse is the client's mistake, not ours."""
+    client = await Client.connect(server)
+    client.writer.write(
+        b"SET_PARAMETER " + client.url.encode() + b" RTSP/1.0\r\n"
+        b"CSeq: 1\r\nContent-Length: abc\r\n\r\n"
+    )
+    await client.writer.drain()
+    status, _, _ = await asyncio.wait_for(client.read_response(), 2)
+    assert status == 400
+    await client.close()
+
+
+async def test_negative_content_length_is_400(server):
+    client = await Client.connect(server)
+    client.writer.write(
+        b"SET_PARAMETER " + client.url.encode() + b" RTSP/1.0\r\n"
+        b"CSeq: 1\r\nContent-Length: -1\r\n\r\n"
+    )
+    await client.writer.drain()
+    status, _, _ = await asyncio.wait_for(client.read_response(), 2)
+    assert status == 400
+    await client.close()
+
+
+async def test_an_absurd_content_length_is_refused_before_reading_it(server):
+    """Otherwise a client can make the server wait on a gigabyte it never sends."""
+    client = await Client.connect(server)
+    client.writer.write(
+        b"SET_PARAMETER " + client.url.encode() + b" RTSP/1.0\r\n"
+        b"CSeq: 1\r\nContent-Length: 1000000000\r\n\r\n"
+    )
+    await client.writer.drain()
+    status, _, _ = await asyncio.wait_for(client.read_response(), 2)
+    assert status == 400
+    await client.close()
+
+
+async def test_a_body_within_the_limit_is_still_read(server):
+    client = await Client.connect(server)
+    body = b"x" * 512
+    client.writer.write(
+        b"SET_PARAMETER " + client.url.encode() + b" RTSP/1.0\r\n"
+        b"CSeq: 1\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
+    )
+    await client.writer.drain()
+    status, _, _ = await asyncio.wait_for(client.read_response(), 2)
+    assert status == 200
+    await client.close()
+
+
+async def test_an_oversized_request_head_is_400_not_a_traceback(server):
+    """The reader refuses to buffer it; that has to surface as a status."""
+    client = await Client.connect(server)
+    client.writer.write(b"OPTIONS " + client.url.encode() + b" RTSP/1.0\r\nCSeq: 1\r\n")
+    client.writer.write(b"X-Padding: " + b"p" * (128 * 1024) + b"\r\n\r\n")
+    try:
+        await client.writer.drain()
+    except (ConnectionError, OSError):  # the server may close mid-write
+        pass
+    status, _, _ = await asyncio.wait_for(client.read_response(), 2)
+    assert status == 400
+    await client.close()
+
+
+# -- SETUP and session state -----------------------------------------------
+async def test_aggregate_setup_without_a_stream_id_sets_up_video(server):
+    client = await Client.connect(server)
+    status, headers, _ = await client.request(
+        "SETUP", Transport="RTP/AVP/TCP;unicast;interleaved=0-1"
+    )
+    assert status == 200
+    session = server.sessions[client.session]
+    assert list(session.streams) == [VIDEO]
+    await client.close()
+
+
+async def test_a_failed_udp_setup_answers_461_and_leaks_no_sockets(server, monkeypatch):
+    """The second socket failing must not strand the first one."""
+    import rtsp_video_streaming.server as server_module
+
+    real_socket = socket.socket
+    created = []
+
+    def flaky_socket(family=socket.AF_INET, type=socket.SOCK_STREAM, *args, **kwargs):
+        # Only the UDP pair this test is about; the loop builds stream sockets
+        # of its own to accept connections with.
+        if type != socket.SOCK_DGRAM:
+            return real_socket(family, type, *args, **kwargs)
+        sock = real_socket(family, type, *args, **kwargs)
+        created.append(sock)
+        if len(created) == 2:  # the RTCP socket of the pair
+            sock.close()
+            raise OSError("no more sockets")
+        return sock
+
+    monkeypatch.setattr(server_module.socket, "socket", flaky_socket)
+
+    client = await Client.connect(server)
+    status, _, _ = await client.request(
+        "SETUP",
+        url=f"{client.url}/streamid=0",
+        Transport="RTP/AVP;unicast;client_port=45678-45679",
+    )
+    assert status == 461
+    assert all(sock.fileno() == -1 for sock in created)
+    await client.close()
+
+
+async def test_play_resumes_after_pause(server):
+    client, _ = await play_over_tcp(server)
+    status, _, _ = await client.request("PAUSE")
+    assert status == 200
+    assert server.source.subscriber_count == 0
+
+    status, _, _ = await client.request("PLAY")
+    assert status == 200
+    assert server.source.subscriber_count == 1
+
+    server.source.publish_rtp(VIDEO, rtp_packet(payload=b"after-resume"))
+    channel, packet = await asyncio.wait_for(client.read_interleaved(), 2)
+    assert channel == 0 and packet[12:] == b"after-resume"
+    await client.close()
+
+
+# -- backlog ---------------------------------------------------------------
+def test_a_lagging_client_is_cut_at_a_frame_boundary():
+    """Dropping mid-frame hands the decoder a broken picture, not a clean gap."""
+    from rtsp_video_streaming.server import RtspConnection
+
+    class FakeTransport:
+        def __init__(self):
+            self.backlog = 0
+
+        def is_closing(self):
+            return False
+
+        def get_write_buffer_size(self):
+            return self.backlog
+
+    class FakeWriter:
+        def __init__(self):
+            self.transport = FakeTransport()
+            self.written = []
+
+        def get_extra_info(self, _name):
+            return ("127.0.0.1", 1)
+
+        def write(self, data):
+            self.written.append(data)
+
+    writer = FakeWriter()
+    connection = RtspConnection(None, None, writer)
+
+    def send(marker):
+        connection.write_video(0, struct.pack("!BBHII", 0x80, 96 | (0x80 if marker else 0),
+                                              1, 0, 1) + b"nal")
+
+    # A frame arrives as three packets, the last one marked. The backlog fills
+    # partway through, so the rest of that frame goes too...
+    send(False)
+    writer.transport.backlog = 99_000_000
+    send(False)
+    writer.transport.backlog = 0
+    send(True)
+    assert len(writer.written) == 1
+
+    # ...and the next frame, which starts clean, is sent again.
+    send(False)
+    send(True)
+    assert len(writer.written) == 3

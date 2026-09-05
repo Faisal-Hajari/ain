@@ -9,7 +9,7 @@ from rtsp_video_streaming.ffmpeg import (
     MediaInfo,
     VIDEO_PAYLOAD_TYPE,
     build_command,
-    parameter_sets,
+    extract_parameter_sets,
     probe_media,
     require_ffmpeg,
     split_annexb,
@@ -35,7 +35,7 @@ def test_command_targets_the_given_rtp_ports_with_fixed_payload_types():
     assert payload_types == [str(VIDEO_PAYLOAD_TYPE), str(AUDIO_PAYLOAD_TYPE)]
 
 
-def test_every_file_is_normalised_to_the_same_size_and_rate():
+def test_every_file_is_normalized_to_the_same_size_and_rate():
     command = build_command(
         Path("a.mp4"), EncodingConfig(width=640, height=360, fps=30), 5000, 5001, 5002, 5003
     )
@@ -172,11 +172,11 @@ def test_split_annexb_handles_three_and_four_byte_start_codes():
 
 def test_parameter_sets_picks_the_sps_and_pps():
     stream = b"\x00\x00\x01\x09\x10\x00\x00\x01\x67SPS\x00\x00\x01\x68PPS\x00\x00\x01\x65IDR"
-    assert parameter_sets(stream) == (b"\x67SPS", b"\x68PPS")
+    assert extract_parameter_sets(stream) == (b"\x67SPS", b"\x68PPS")
 
 
 def test_parameter_sets_missing_from_the_stream():
-    assert parameter_sets(b"\x00\x00\x01\x65IDR") is None
+    assert extract_parameter_sets(b"\x00\x00\x01\x65IDR") is None
 
 
 def test_video_fmtp_advertises_the_parameter_sets():

@@ -1,6 +1,6 @@
 """Building and probing with ffmpeg.
 
-Every file in the playlist is normalised to the *same* codecs, resolution,
+Every file in the playlist is normalized to the *same* codecs, resolution,
 frame rate and payload types.  Clients negotiate the stream once (via DESCRIBE)
 and that description has to stay true for every file in the loop, so the
 encoder settings are deliberately fixed rather than copied from the source.
@@ -144,7 +144,7 @@ def split_annexb(data: bytes) -> List[bytes]:
     return [unit for unit in units if unit]
 
 
-def parameter_sets(annexb: bytes) -> Optional[Tuple[bytes, bytes]]:
+def extract_parameter_sets(annexb: bytes) -> Optional[Tuple[bytes, bytes]]:
     """Pick the (SPS, PPS) pair out of an Annex-B stream."""
     sps = pps = None
     for unit in split_annexb(annexb):
@@ -183,7 +183,7 @@ def probe_parameter_sets(config: EncodingConfig) -> Optional[Tuple[bytes, bytes]
             "parameter set probe failed: %s", result.stderr.decode(errors="replace")
         )
         return None
-    return parameter_sets(result.stdout)
+    return extract_parameter_sets(result.stdout)
 
 
 def sprop_parameter_sets(sets: Tuple[bytes, bytes]) -> str:

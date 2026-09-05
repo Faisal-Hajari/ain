@@ -27,14 +27,22 @@ class ParseError(ValueError):
     pass
 
 
+_MISSING = object()
+
+
 class Headers(Dict[str, str]):
-    """Case-insensitive header mapping that remembers the original casing."""
+    """Case-insensitive header mapping that remembers the original casing.
+
+    Every entry point that names a key has to go through ``_keys``, deletion
+    included: an override that reaches only half of them leaves the two
+    mappings disagreeing, and ``"CSeq" in headers`` then answers True for a
+    header that ``headers["cseq"]`` raises ``KeyError`` for.
+    """
 
     def __init__(self, items=()):
         super().__init__()
         self._keys: Dict[str, str] = {}
-        for key, value in dict(items).items():
-            self[key] = value
+        self.update(items)
 
     def __setitem__(self, key: str, value: str) -> None:
         lower = key.lower()
@@ -46,6 +54,10 @@ class Headers(Dict[str, str]):
 
     def __getitem__(self, key: str) -> str:
         return super().__getitem__(self._keys[key.lower()])
+
+    def __delitem__(self, key: str) -> None:
+        stored = self._keys.pop(key.lower())
+        super().__delitem__(stored)
 
     def __contains__(self, key: object) -> bool:
         return isinstance(key, str) and key.lower() in self._keys
@@ -61,6 +73,26 @@ class Headers(Dict[str, str]):
             return self[key]
         except KeyError:
             return default
+
+    def pop(self, key: str, default=_MISSING):
+        try:
+            stored = self._keys.pop(key.lower())
+        except KeyError:
+            if default is _MISSING:
+                raise
+            return default
+        return super().pop(stored)
+
+    def update(self, items=(), **extra) -> None:  # type: ignore[override]
+        pairs = items.items() if hasattr(items, "items") else items
+        for key, value in pairs:
+            self[key] = value
+        for key, value in extra.items():
+            self[key] = value
+
+    def clear(self) -> None:
+        self._keys.clear()
+        super().clear()
 
 
 @dataclass

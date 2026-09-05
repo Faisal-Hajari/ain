@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import socket
 import struct
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 from rtsp_video_streaming.rtsp import (
-    CRLF,
     Headers,
     ParseError,
     Request,
@@ -22,6 +22,7 @@ from rtsp_video_streaming.rtsp import (
     parse_transport,
     public_methods,
 )
+from rtsp_video_streaming.rtp import ends_frame
 from rtsp_video_streaming.sdp import VIDEO, build_sdp, control_id, stream_kinds
 from rtsp_video_streaming.source import MediaSource
 
@@ -30,6 +31,9 @@ log = logging.getLogger(__name__)
 SERVER_NAME = "rtsp-video-streaming"
 SESSION_TIMEOUT_SECONDS = 60
 MAX_REQUEST_BYTES = 64 * 1024
+# SET_PARAMETER is the only method here that carries a body, and those are a
+# line or two; anything larger is a client claiming a length it will not send.
+MAX_BODY_BYTES = 8 * 1024
 # Past this much queued data a client is not keeping up; drop rather than buffer.
 MAX_TCP_BACKLOG_BYTES = 2 * 1024 * 1024
 
@@ -66,7 +70,11 @@ class Session:
         if setup is None or not self.playing:
             return
         if setup.transport.is_tcp:
-            self.connection.write_interleaved(setup.transport.interleaved[0], packet)
+            channel = setup.transport.interleaved[0]
+            if kind == VIDEO:
+                self.connection.write_video(channel, packet)
+            else:
+                self.connection.write_packet(channel, packet)
         elif setup.udp_rtp is not None:
             setup.udp_rtp.sendto(packet)
 
@@ -75,7 +83,7 @@ class Session:
         if setup is None or not self.playing:
             return
         if setup.transport.is_tcp:
-            self.connection.write_interleaved(setup.transport.interleaved[1], packet)
+            self.connection.write_packet(setup.transport.interleaved[1], packet)
         elif setup.udp_rtcp is not None:
             setup.udp_rtcp.sendto(packet)
 
@@ -98,7 +106,7 @@ class RtspServer:
         host: str = "0.0.0.0",
         port: int = 8554,
         with_audio: bool = True,
-        parameter_sets=None,
+        parameter_sets: Optional[Tuple[bytes, bytes]] = None,
     ) -> None:
         self.source = source
         self.path = "/" + path.strip("/")
@@ -110,12 +118,17 @@ class RtspServer:
         self._server: Optional[asyncio.AbstractServer] = None
 
     @property
-    def kinds(self):
+    def kinds(self) -> Sequence[str]:
         return stream_kinds(self.with_audio)
 
     async def start(self) -> int:
         self._server = await asyncio.start_server(
-            self._handle_client, host=self.host, port=self.port
+            self._handle_client,
+            host=self.host,
+            port=self.port,
+            # The reader refuses to buffer a longer head than this, so the limit
+            # is the request-size guard: a bigger one raises LimitOverrunError.
+            limit=MAX_REQUEST_BYTES,
         )
         sockets = self._server.sockets or ()
         bound_port = sockets[0].getsockname()[1] if sockets else self.port
@@ -155,12 +168,7 @@ class RtspServer:
     def matches_path(self, request_path: str) -> bool:
         """Accept the aggregate URL and any per-stream control URL under it."""
         candidate = "/" + request_path.strip("/")
-        if candidate == self.path:
-            return True
-        for kind in self.kinds:
-            if candidate == f"{self.path}/{control_id(kind)}":
-                return True
-        return False
+        return candidate == self.path or self.kind_for_path(request_path) is not None
 
     def kind_for_path(self, request_path: str) -> Optional[str]:
         candidate = "/" + request_path.strip("/")
@@ -183,21 +191,50 @@ class RtspConnection:
         self.peer = writer.get_extra_info("peername")
         self.sessions: Dict[str, Session] = {}
         self._closed = False
+        self._dropping_frame = False
 
     # -- wire I/O ---------------------------------------------------------
-    def write_interleaved(self, channel: int, payload: bytes) -> None:
+    def _backlogged(self) -> bool:
+        """Whether the client is too far behind to be sent anything more."""
         if self._closed:
-            return
+            return True
         transport = self.writer.transport
         if transport is None or transport.is_closing():
             self._closed = True
-            return
-        if transport.get_write_buffer_size() > MAX_TCP_BACKLOG_BYTES:
-            return  # client is too slow: drop this packet instead of buffering
+            return True
+        return transport.get_write_buffer_size() > MAX_TCP_BACKLOG_BYTES
+
+    def _write(self, channel: int, payload: bytes) -> None:
         try:
             self.writer.write(interleaved_frame(channel, payload))
         except (ConnectionError, RuntimeError):  # pragma: no cover - racy teardown
             self._closed = True
+
+    def write_packet(self, channel: int, payload: bytes) -> None:
+        """Interleave one self-contained packet, dropping it if the client lags.
+
+        Audio packets and RTCP reports each stand alone, so losing one costs
+        exactly itself.
+        """
+        if self._backlogged():
+            return
+        self._write(channel, payload)
+
+    def write_video(self, channel: int, packet: bytes) -> None:
+        """Interleave one video packet, dropping whole frames when the client lags.
+
+        A dropped packet is usually the middle of a fragmented NAL unit, and the
+        decoder renders the resulting half-picture rather than skipping it.
+        Dropping on to the end of the access unit costs no more bandwidth and
+        leaves a clean gap, so playback resumes at the next frame.
+        """
+        if self._backlogged():
+            self._dropping_frame = not ends_frame(packet)
+            return
+        if self._dropping_frame:
+            self._dropping_frame = not ends_frame(packet)
+            return
+        self._write(channel, packet)
 
     def _send(self, response: Response) -> None:
         if self._closed:
@@ -238,18 +275,40 @@ class RtspConnection:
                 continue
             if first in b"\r\n":
                 continue  # tolerate stray CRLF between requests
-            head = first + await self.reader.readuntil(b"\r\n\r\n")
-            if len(head) > MAX_REQUEST_BYTES:
-                return None
+            try:
+                head = first + await self.reader.readuntil(b"\r\n\r\n")
+            except (asyncio.LimitOverrunError, ValueError) as exc:
+                return self._reject(f"request head over {MAX_REQUEST_BYTES} bytes: {exc}")
             try:
                 request = parse_request_head(head)
             except ParseError as exc:
-                log.warning("bad request from %s: %s", self.peer, exc)
-                self._send(Response(status=400))
-                return None
-            length = int(request.headers.get("Content-Length", "0") or 0)
+                return self._reject(f"bad request: {exc}")
+            try:
+                length = self._body_length(request)
+            except ValueError as exc:
+                return self._reject(str(exc))
             body = await self.reader.readexactly(length) if length else b""
             return request, body
+
+    @staticmethod
+    def _body_length(request: Request) -> int:
+        """The Content-Length to read, or ``ValueError`` if it is not usable."""
+        raw = request.headers.get("Content-Length", "0") or "0"
+        try:
+            length = int(raw)
+        except ValueError:
+            raise ValueError(f"malformed Content-Length {raw!r}") from None
+        if length < 0:
+            raise ValueError(f"negative Content-Length {raw!r}")
+        if length > MAX_BODY_BYTES:
+            raise ValueError(f"Content-Length {length} over the {MAX_BODY_BYTES} byte limit")
+        return length
+
+    def _reject(self, reason: str) -> None:
+        """Answer 400 and stop reading: the stream is no longer trustworthy."""
+        log.warning("rejecting request from %s: %s", self.peer, reason)
+        self._send(Response(status=400))
+        return None
 
     async def close(self) -> None:
         if self._closed:
@@ -266,21 +325,23 @@ class RtspConnection:
         log.info("client disconnected: %s", self.peer)
 
     # -- request handling -------------------------------------------------
+    _HANDLERS = {
+        "OPTIONS": "_options",
+        "DESCRIBE": "_describe",
+        "SETUP": "_setup",
+        "PLAY": "_play",
+        "PAUSE": "_pause",
+        "TEARDOWN": "_teardown",
+        "GET_PARAMETER": "_keepalive",
+        "SET_PARAMETER": "_keepalive",
+    }
+
     async def _dispatch(self, request: Request, body: bytes) -> Optional[Response]:
         log.debug("%s %s from %s", request.method, request.uri, self.peer)
-        handler = {
-            "OPTIONS": self._options,
-            "DESCRIBE": self._describe,
-            "SETUP": self._setup,
-            "PLAY": self._play,
-            "PAUSE": self._pause,
-            "TEARDOWN": self._teardown,
-            "GET_PARAMETER": self._keepalive,
-            "SET_PARAMETER": self._keepalive,
-        }.get(request.method)
-        if handler is None:
+        name = self._HANDLERS.get(request.method)
+        if name is None:
             return self._respond(request, 501)
-        return handler(request)
+        return await getattr(self, name)(request)
 
     def _respond(
         self,
@@ -305,10 +366,10 @@ class RtspConnection:
             return None
         return self.sessions.get(session_id)
 
-    def _options(self, request: Request) -> Response:
+    async def _options(self, request: Request) -> Response:
         return self._respond(request, 200, headers={"Public": public_methods()})
 
-    def _describe(self, request: Request) -> Response:
+    async def _describe(self, request: Request) -> Response:
         if not self.server.matches_path(request.path):
             return self._respond(request, 404)
         sdp = build_sdp(
@@ -324,7 +385,7 @@ class RtspConnection:
             headers={"Content-Type": "application/sdp", "Content-Base": base},
         )
 
-    def _setup(self, request: Request) -> Response:
+    async def _setup(self, request: Request) -> Response:
         kind = self.server.kind_for_path(request.path)
         if kind is None:
             if not self.server.matches_path(request.path):
@@ -355,7 +416,7 @@ class RtspConnection:
         setup = StreamSetup(kind=kind, transport=transport)
         if not transport.is_tcp:
             try:
-                self._open_udp(session, setup)
+                await self._open_udp(setup)
             except OSError as exc:
                 log.warning("cannot open UDP transport for %s: %s", self.peer, exc)
                 return self._respond(request, 461, session=session)
@@ -365,37 +426,45 @@ class RtspConnection:
             request, 200, headers={"Transport": transport.encode()}, session=session
         )
 
-    def _open_udp(self, session: Session, setup: StreamSetup) -> None:
+    async def _open_udp(self, setup: StreamSetup) -> None:
+        """Bind this stream's two sending sockets and wire them into the loop.
+
+        Done before SETUP is answered, so the ``server_port`` the client reads is
+        already sending by the time it can look. The address family follows the
+        client's own, because the connection may well be IPv6.
+
+        The stack unwinds every socket and transport opened so far if a later
+        one fails, leaving SETUP free to answer 461 without leaking a descriptor.
+        """
         host = self.peer[0] if self.peer else "127.0.0.1"
-        client_rtp, client_rtcp = setup.transport.client_ports
         loop = asyncio.get_running_loop()
+        family = socket.AF_INET6 if ":" in host else socket.AF_INET
+        wildcard = "::" if family == socket.AF_INET6 else "0.0.0.0"
 
-        rtp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        rtp_sock.setblocking(False)
-        rtp_sock.bind(("0.0.0.0", 0))
-        rtp_sock.connect((host, client_rtp))
-        rtcp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        rtcp_sock.setblocking(False)
-        rtcp_sock.bind(("0.0.0.0", 0))
-        rtcp_sock.connect((host, client_rtcp))
+        with contextlib.ExitStack() as opened:
+            sockets = []
+            for client_port in setup.transport.client_ports:
+                sock = socket.socket(family, socket.SOCK_DGRAM)
+                opened.callback(sock.close)
+                sock.setblocking(False)
+                sock.bind((wildcard, 0))
+                sock.connect((host, client_port))
+                sockets.append(sock)
 
-        async def _connect(sock):
-            transport, _ = await loop.create_datagram_endpoint(_UdpSender, sock=sock)
-            return transport
+            setup.transport.server_ports = (
+                sockets[0].getsockname()[1],
+                sockets[1].getsockname()[1],
+            )
+            setup.udp_rtp, _ = await loop.create_datagram_endpoint(
+                _UdpSender, sock=sockets[0]
+            )
+            opened.callback(setup.udp_rtp.close)
+            setup.udp_rtcp, _ = await loop.create_datagram_endpoint(
+                _UdpSender, sock=sockets[1]
+            )
+            opened.pop_all()  # all of it opened: the setup owns it now
 
-        # The sockets are already bound and connected, so wiring them into the
-        # loop cannot block; schedule it and record the ports we will send from.
-        setup.transport.server_ports = (
-            rtp_sock.getsockname()[1],
-            rtcp_sock.getsockname()[1],
-        )
-        loop.create_task(self._attach_udp(setup, _connect(rtp_sock), _connect(rtcp_sock)))
-
-    async def _attach_udp(self, setup: StreamSetup, rtp_coro, rtcp_coro) -> None:
-        setup.udp_rtp = await rtp_coro
-        setup.udp_rtcp = await rtcp_coro
-
-    def _play(self, request: Request) -> Response:
+    async def _play(self, request: Request) -> Response:
         session = self._session_for(request)
         if session is None:
             return self._respond(request, 454)
@@ -411,6 +480,9 @@ class RtspConnection:
             url = f"{request.uri.split('?')[0].rstrip('/')}"
             if self.server.kind_for_path(request.path) is None:
                 url = f"{url}/{control_id(kind)}"
+            # Approximate by construction: the encoder is free-running and
+            # shared, so more packets go out between here and the client
+            # reading this. Clients treat RTP-Info as a hint, not a promise.
             rtp_info.append(
                 f"url={url};seq={(rewriter.sequence + 1) & 0xFFFF};"
                 f"rtptime={rewriter.timestamp}"
@@ -425,7 +497,7 @@ class RtspConnection:
             session=session,
         )
 
-    def _pause(self, request: Request) -> Response:
+    async def _pause(self, request: Request) -> Response:
         session = self._session_for(request)
         if session is None:
             return self._respond(request, 454)
@@ -433,7 +505,7 @@ class RtspConnection:
         self.server.source.unsubscribe(session)
         return self._respond(request, 200, session=session)
 
-    def _teardown(self, request: Request) -> Response:
+    async def _teardown(self, request: Request) -> Response:
         session = self._session_for(request)
         if session is None:
             return self._respond(request, 454)
@@ -441,6 +513,6 @@ class RtspConnection:
         self.server.drop(session)
         return self._respond(request, 200)
 
-    def _keepalive(self, request: Request) -> Response:
+    async def _keepalive(self, request: Request) -> Response:
         session = self._session_for(request)
         return self._respond(request, 200, session=session)

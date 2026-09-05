@@ -49,13 +49,17 @@ def parse_header(packet: bytes) -> RtpHeader:
     )
 
 
+def ends_frame(packet: bytes) -> bool:
+    """Whether ``packet`` carries the RTP marker bit.
+
+    For H.264 the marker means "last packet of this access unit", which is the
+    only place a stream can be cut without leaving a decoder half a picture.
+    """
+    return len(packet) >= 2 and bool(packet[1] & 0x80)
+
+
 def _random_u32() -> int:
     return struct.unpack("!I", os.urandom(4))[0]
-
-
-def _is_before(first: int, second: int) -> bool:
-    """Compare two RTP timestamps, accounting for 32-bit wraparound."""
-    return ((first - second) & MAX_U32) >= 0x80000000
 
 
 class RtpRewriter:
@@ -78,10 +82,21 @@ class RtpRewriter:
         self.timestamp = self.epoch_timestamp
         self._segment_out_base = self.timestamp
         self._segment_in_base: int | None = None
+        # Ticks from the epoch to ``self.timestamp``, counted without wrapping.
+        # The 32-bit field on the wire wraps every 13 hours at 90 kHz and a
+        # camera feed runs for days, so the clock a sender report is built from
+        # is kept here instead of recovered by subtracting wrapped values.
+        self._advance = 0
+        self._segment_out_advance = 0
 
         self.packet_count = 0
         self.octet_count = 0
-        # Wall-clock time paired with ``self.timestamp``, for RTCP sender reports.
+        # Wall-clock time of the source epoch, i.e. of ``self.epoch_timestamp``.
+        # Learned from the first segment, then fixed, so that every sender report
+        # maps RTP to NTP through one unchanging line.  See ``sender_report``.
+        self.epoch_wallclock: float | None = None
+        # Wall-clock time the last packet was forwarded.  Only a fallback for a
+        # sender report built before the first segment has anchored the clock.
         self.last_send_time = time.time()
 
     def start_segment(self, elapsed: float = 0.0) -> None:
@@ -93,12 +108,15 @@ class RtpRewriter:
         together across file boundaries instead of drifting apart a little at
         every switch.
         """
+        if self.epoch_wallclock is None:
+            self.epoch_wallclock = time.time() - elapsed
         self._segment_in_base = None
-        anchored = (self.epoch_timestamp + int(elapsed * self.clock_rate)) & MAX_U32
-        earliest = (self.timestamp + self.gap_ticks) & MAX_U32
-        if self.packet_count and _is_before(anchored, earliest):
+        anchored = int(elapsed * self.clock_rate)
+        earliest = self._advance + self.gap_ticks
+        if self.packet_count and anchored < earliest:
             anchored = earliest  # never step the outgoing clock backwards
-        self._segment_out_base = anchored
+        self._segment_out_advance = anchored
+        self._segment_out_base = (self.epoch_timestamp + anchored) & MAX_U32
 
     def rewrite(self, packet: bytes) -> bytes:
         """Return ``packet`` renumbered onto the continuous outgoing stream."""
@@ -108,6 +126,7 @@ class RtpRewriter:
         elapsed = (header.timestamp - self._segment_in_base) & MAX_U32
 
         self.sequence = (self.sequence + 1) & MAX_U16
+        self._advance = self._segment_out_advance + elapsed
         self.timestamp = (self._segment_out_base + elapsed) & MAX_U32
         self.last_send_time = time.time()
         self.packet_count += 1
@@ -122,12 +141,23 @@ class RtpRewriter:
     def sender_report(self) -> bytes:
         """Build an RTCP sender report so clients can sync audio to video.
 
-        The report pairs the wall-clock time of the last packet we sent with
-        that packet's RTP timestamp.  Extrapolating to "now" instead would put
-        a real-time guess into the mapping clients use to schedule playback,
-        and the guess is wrong by however much the encoder is ahead or behind.
+        The NTP time is derived from the outgoing clock itself: the epoch, plus
+        however far ``self.timestamp`` has advanced past it.  Every report a
+        client receives therefore describes the same straight line.
+
+        Pairing the timestamp with the wall-clock moment the packet happened to
+        be forwarded looks more truthful but is not: a packet's arrival time is
+        the encoder's start-up cost and burst pattern, not its place on the
+        media clock, and both change with every file.  Clients rebuild their
+        RTP-to-NTP mapping from the newest report, so a mapping that shifts per
+        file drags the whole timeline with it and playback jumps backwards at
+        every switch.
         """
-        ntp = self.last_send_time + NTP_EPOCH_OFFSET
+        if self.epoch_wallclock is None:
+            wallclock = self.last_send_time
+        else:
+            wallclock = self.epoch_wallclock + self._advance / self.clock_rate
+        ntp = wallclock + NTP_EPOCH_OFFSET
         ntp_seconds = int(ntp)
         ntp_fraction = int((ntp - ntp_seconds) * (1 << 32)) & MAX_U32
         rtp_ts = self.timestamp
