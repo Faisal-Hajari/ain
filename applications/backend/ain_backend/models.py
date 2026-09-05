@@ -1,186 +1,362 @@
-"""Response models shared by the catalogue and the dummy data layer.
+"""The wire contract, mirroring `frontend/src/api/types.ts`.
 
-The dashboard front end builds its cards, gauges and graphs from these
-shapes, so they are the contract that survives when the real data
-sources replace `ain_backend.dummy`.
+Field names are snake_case in Python and camelCase on the wire; the
+alias generator is what bridges them, so a rename here is a rename
+there. Optional fields are dropped rather than sent as null, matching
+what the TypeScript's `?:` means.
 """
 
-import datetime
 import enum
+from typing import Literal
 
 import pydantic
+from pydantic import alias_generators
+
+Point = dict[str, str | float]
+"""One chart point: `x` plus one numeric key per series id."""
+
+
+class Model(pydantic.BaseModel):
+	"""Base for every response model."""
+
+	model_config = pydantic.ConfigDict(
+		alias_generator=alias_generators.to_camel,
+		populate_by_name=True,
+		serialize_by_alias=True,
+	)
 
 
 class ElementType(enum.StrEnum):
-	"""How the front end renders an element."""
+	"""Which renderer the frontend picks for an element."""
 
-	KPI_CARD = 'kpi_card'
-	ALERT = 'alert'
-	GRAPH_LINE = 'graph_line'
-	GRAPH_BAR = 'graph_bar'
-	GRAPH_DONUT = 'graph_donut'
-	GRAPH_HISTOGRAM = 'graph_histogram'
+	KPI = 'kpi'
+	STAT_GROUP = 'stat-group'
 	GAUGE = 'gauge'
+	LINE = 'line'
+	BAR = 'bar'
+	STACKED_BAR = 'stacked-bar'
+	DONUT = 'donut'
+	HISTOGRAM = 'histogram'
+	HEATMAP = 'heatmap'
+	ALERT = 'alert'
+	TABLE = 'table'
+	CAMERA_GRID = 'camera-grid'
 
 
-class Cadence(enum.StrEnum):
-	"""How often an element is refreshed upstream."""
+class ElementKind(enum.StrEnum):
+	"""Monitors track a value; alerts count occurrences."""
 
-	REAL_TIME = 'real_time'
-	PER_EVENT = 'per_event'
-	PER_VISIT = 'per_visit'
+	MONITOR = 'monitor'
+	ALERT = 'alert'
+
+
+class UpdateCadence(enum.StrEnum):
+	"""How often the frontend re-asks for an element."""
+
+	REALTIME = 'realtime'
+	EVENT = 'event'
+	VISIT = 'visit'
 	HOURLY = 'hourly'
 	DAILY = 'daily'
+	STATIC = 'static'
 
 
-class ValueKind(enum.StrEnum):
-	"""What an element's value means, and which payload it carries."""
+class Severity(enum.StrEnum):
+	"""The backend's judgement, which the frontend maps to a colour."""
 
-	COUNT = 'count'
-	PEOPLE = 'people'
-	DURATION = 'duration'
-	PERCENT = 'percent'
-	CLOCK_TIME = 'clock_time'
-	DISTRIBUTION = 'distribution'
+	OK = 'ok'
+	INFO = 'info'
+	WARN = 'warn'
+	CRITICAL = 'critical'
 
 
-class Placement(enum.StrEnum):
-	"""Where a camera sits in the venue."""
+class Direction(enum.StrEnum):
+	"""Which glyph a delta pill carries."""
 
-	INDOOR = 'indoor'
-	OUTDOOR = 'outdoor'
-	BACK_OF_HOUSE = 'back_of_house'
-
-
-class Camera(pydantic.BaseModel):
-	"""A CCTV feed as installed at the branch."""
-
-	id: str
-	label: str
-	coverage: str
-	placement: Placement
+	UP = 'up'
+	DOWN = 'down'
+	FLAT = 'flat'
 
 
-class Element(pydantic.BaseModel):
-	"""One catalogue entry: a KPI, an alert or a graph."""
+class Comparator(enum.StrEnum):
+	"""The test an alert rule applies to its monitor."""
 
-	id: str
-	section_id: str
-	name: str
-	measures: str
-	types: list[ElementType]
-	cadence: Cadence
-	cameras: list[str]
-	value_kind: ValueKind
-	unit: str
-	baseline: float
-	has_instances: bool = False
+	ABOVE = 'above'
+	BELOW = 'below'
 
 
-class Section(pydantic.BaseModel):
-	"""A catalogue chapter and the elements it groups."""
+class ElementDef(Model):
+	"""One card in the layout."""
 
 	id: str
 	title: str
-	description: str
-	elements: list[Element]
+	description: str | None = None
+	type: ElementType
+	kind: ElementKind
+	updates: UpdateCadence
+	span: int | None = None
+	cameras: list[str] | None = None
+	drilldown: Literal['instances'] | None = None
 
 
-class FilterOption(pydantic.BaseModel):
-	"""One selectable value of a global filter."""
+class SectionDef(Model):
+	"""One nav tab."""
+
+	id: str
+	title: str
+	description: str | None = None
+	view: Literal['grid', 'alerts'] | None = None
+	elements: list[ElementDef]
+
+
+class FilterOption(Model):
+	"""One selectable value of a filter."""
+
+	value: str
+	label: str
+
+
+class FilterDef(Model):
+	"""A global control, owning one URL search parameter."""
 
 	id: str
 	label: str
-	label_ar: str
+	control: Literal['select', 'date-range'] | None = None
+	options: list[FilterOption]
+	default_value: str
 
 
-class FilterCatalogue(pydantic.BaseModel):
-	"""The global controls that slice every panel."""
+class DashboardConfig(Model):
+	"""The whole navigation and layout, localised."""
 
-	branches: list[FilterOption]
-	venue_types: list[FilterOption]
-	date_ranges: list[FilterOption]
-	languages: list[FilterOption]
-
-
-class Catalogue(pydantic.BaseModel):
-	"""Everything the front end needs to lay out the dashboard."""
-
-	cameras: list[Camera]
-	filters: FilterCatalogue
-	sections: list[Section]
+	branch_label: str
+	today: str
+	filters: list[FilterDef]
+	sections: list[SectionDef]
 
 
-class TimeWindow(pydantic.BaseModel):
-	"""The resolved date range a payload was computed over."""
-
-	range_id: str
-	start: datetime.datetime
-	end: datetime.datetime
-	bucket_seconds: int
-
-
-class ScalarValue(pydantic.BaseModel):
-	"""A single headline number plus its trend against the last window."""
-
-	value: float
-	unit: str
-	delta_pct: float
-
-
-class SeriesPoint(pydantic.BaseModel):
-	"""One point of a trend line."""
-
-	at: datetime.datetime
-	value: float
-
-
-class Bucket(pydantic.BaseModel):
-	"""One bar, donut slice or histogram bin."""
+class Delta(Model):
+	"""A pre-formatted change, and whether it is good news."""
 
 	label: str
+	direction: Direction
+	sentiment: Severity
+
+
+class SeriesDef(Model):
+	"""One line, bar stack or slice group in a chart."""
+
+	id: str
+	label: str
+	color_index: int | None = None
+
+
+class TrendPayload(Model):
+	"""The compact chart a card carries under its numbers."""
+
+	series: list[SeriesDef]
+	points: list[Point]
+
+
+class KpiPayload(Model):
+	"""One headline number."""
+
+	value: str
+	unit: str | None = None
+	delta: Delta | None = None
+	severity: Severity | None = None
+	trend: TrendPayload | None = None
+
+
+class Stat(Model):
+	"""One number inside a stat group."""
+
+	id: str
+	label: str
+	value: str
+	unit: str | None = None
+	severity: Severity | None = None
+	delta: Delta | None = None
+
+
+class StatGroupPayload(Model):
+	"""Several related numbers on one card."""
+
+	stats: list[Stat]
+	trend: TrendPayload | None = None
+
+
+class GaugePayload(Model):
+	"""A value inside a range."""
+
 	value: float
+	min: float
+	max: float
+	unit: str | None = None
+	value_label: str
+	severity: Severity | None = None
 
 
-class ElementData(pydantic.BaseModel):
-	"""The payload behind a single dashboard element."""
+class SeriesPayload(Model):
+	"""Line, bar, stacked-bar and histogram all draw this."""
 
-	element_id: str
-	value_kind: ValueKind
-	unit: str
-	generated_at: datetime.datetime
-	window: TimeWindow
-	scalar: ScalarValue | None = None
-	series: list[SeriesPoint] | None = None
-	buckets: list[Bucket] | None = None
-	text: str | None = None
+	series: list[SeriesDef]
+	points: list[Point]
+	x_label: str | None = None
+	y_label: str | None = None
+	unit: str | None = None
 
 
-class Instance(pydantic.BaseModel):
-	"""One occurrence behind an alert-count card."""
-
-	id: str
-	element_id: str
-	occurred_at: datetime.datetime
-	camera_id: str
-	duration_seconds: float | None
-	clip_url: str
-	thumbnail_url: str
-
-
-class Employee(pydantic.BaseModel):
-	"""A rostered staff member and the day's derived timesheet."""
+class DonutSlice(Model):
+	"""One slice of a donut."""
 
 	id: str
-	name: str
-	role: str
-	shift_start: str
-	shift_end: str
-	clock_in: str
-	clock_out: str
-	hours_worked: float
-	late_arrival: bool
-	ppe_adherence_pct: float
-	no_gloves_count: int
-	no_hair_cover_count: int
-	no_mask_count: int
+	label: str
+	value: float
+	color_index: int | None = None
+
+
+class DonutPayload(Model):
+	"""Parts of a whole."""
+
+	slices: list[DonutSlice]
+	center_label: str | None = None
+	center_value: str | None = None
+
+
+class HeatmapPayload(Model):
+	"""A matrix, row-major, `cells[y][x]`."""
+
+	x_labels: list[str]
+	y_labels: list[str]
+	cells: list[list[float | None]]
+	unit: str | None = None
+
+
+class AlertPayload(Model):
+	"""A live state, not a count."""
+
+	severity: Severity
+	headline: str
+	detail: str | None = None
+	meta: str | None = None
+
+
+class CameraFeed(Model):
+	"""One tile of the camera grid."""
+
+	id: str
+	label: str
+	zone: str
+	status: Literal['online', 'offline']
+	status_label: str
+	stream_url: str | None = None
+	thumbnail_url: str | None = None
+
+
+class CameraGridPayload(Model):
+	"""Every camera at the branch."""
+
+	feeds: list[CameraFeed]
+
+
+class TableColumn(Model):
+	"""One column header."""
+
+	key: str
+	label: str
+	align: Literal['start', 'end'] | None = None
+
+
+class TablePayload(Model):
+	"""Rows in the order they are sent."""
+
+	columns: list[TableColumn]
+	rows: list[dict[str, str | float | None]]
+
+
+Payload = (
+	KpiPayload
+	| StatGroupPayload
+	| GaugePayload
+	| SeriesPayload
+	| DonutPayload
+	| HeatmapPayload
+	| AlertPayload
+	| CameraGridPayload
+	| TablePayload
+)
+
+
+class ElementResponse(Model):
+	"""One card's payload, discriminated by `type`."""
+
+	element_id: str
+	updated_at: str
+	type: ElementType
+	data: Payload
+
+
+class Instance(Model):
+	"""One occurrence behind an alert card."""
+
+	id: str
+	timestamp: str
+	camera: str
+	detail: str | None = None
+	severity: Severity | None = None
+	clip_url: str | None = None
+	thumbnail_url: str | None = None
+
+
+class InstanceLog(Model):
+	"""The drilldown behind an element."""
+
+	element_id: str
+	title: str
+	total: int
+	instances: list[Instance]
+
+
+class AlertMonitor(Model):
+	"""A value an alert rule can be built on."""
+
+	id: str
+	label: str
+	unit: str | None = None
+	monthly_average: str
+	monthly_average_value: float
+	trend: TrendPayload | None = None
+
+
+class AlertMonitorList(Model):
+	"""Everything the alert builder can watch."""
+
+	monitors: list[AlertMonitor]
+
+
+class AlertRule(Model):
+	"""A stored rule, localised at read time."""
+
+	id: str
+	monitor_id: str
+	monitor_label: str
+	comparator: Comparator
+	threshold: float
+	unit: str | None = None
+	summary: str
+	created_label: str
+
+
+class AlertRuleList(Model):
+	"""Every rule in scope."""
+
+	rules: list[AlertRule]
+
+
+class AlertRuleDraft(Model):
+	"""What the alert builder posts."""
+
+	monitor_id: str
+	comparator: Comparator
+	threshold: float = pydantic.Field(ge=0)

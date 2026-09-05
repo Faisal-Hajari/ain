@@ -1,248 +1,212 @@
-"""The read-only HTTP API the dashboard front end talks to.
+"""The HTTP surface the dashboard talks to.
 
-Every route answers from the static catalogue plus the deterministic
-dummy layer. There are no writes: the services that feed the database
-live elsewhere.
+Read routes are pure functions of the query string, so any replica can
+answer any request. The alert-rule routes are the exception and say so
+in `ain_backend.alerts`.
 """
 
-import datetime
 import os
+import urllib.parse
 from typing import Annotated
 
 import fastapi
-import pydantic
+from fastapi import responses
 from fastapi.middleware import cors
 
+from ain_backend import alerts
 from ain_backend import catalogue
-from ain_backend import dummy
+from ain_backend import i18n
 from ain_backend import models
-from ain_backend import timeframes
+from ain_backend import payloads
 
-_DEFAULT_ALERT_FEED_LIMIT = 25
+# The filters the frontend stacks onto every data request. UI state
+# (`expanded`, `settings`, ...) also rides in the URL but is not sent,
+# and anything unrecognised here is ignored rather than seeded on.
+_FILTER_KEYS = ('branch', 'venue', 'range')
 
-
-class Filters(pydantic.BaseModel):
-	"""The global controls that slice every panel."""
-
-	branch: str = 'riyadh-01'
-	venue_type: str = 'cafe'
-	range: str = '7d'
-	start: datetime.datetime | None = None
-	end: datetime.datetime | None = None
-	language: str = 'en'
+_MEDIA_DETAIL = (
+	'no media in the dummy backend: clips and streams are placeholders'
+)
 
 
-class RequestScope(pydantic.BaseModel):
-	"""The filters as the data layer consumes them."""
+class Filters:
+	"""The active filters, plus the seed they derive from.
 
-	window: models.TimeWindow
-	key: str
-
-
-def resolve_scope(
-	filters: Annotated[Filters, fastapi.Query()],
-) -> RequestScope:
-	"""Resolves the query filters into a window and a seed key.
-
-	Args:
-		filters: The global filters as sent by the front end.
-
-	Returns:
-		The resolved scope shared by every data route.
-
-	Raises:
-		fastapi.HTTPException: The date range is not one we serve.
+	The seed excludes `lang` on purpose: switching language must relabel
+	a card without moving its numbers.
 	"""
-	try:
-		window = timeframes.resolve(
-			filters.range,
-			datetime.datetime.now(datetime.UTC).replace(tzinfo=None),
-			filters.start,
-			filters.end,
-		)
-	except timeframes.UnknownRangeError as error:
-		raise fastapi.HTTPException(
-			status_code=400, detail=str(error)
-		) from error
-	return RequestScope(
-		window=window,
-		key=f'{filters.branch}|{filters.venue_type}',
-	)
+
+	def __init__(self, request: fastapi.Request) -> None:
+		self.locale = i18n.parse_locale(request.query_params.get('lang'))
+		self.values = {
+			key: request.query_params.get(key, '')
+			for key in _FILTER_KEYS
+			if request.query_params.get(key)
+		}
+		self.seed_key = urllib.parse.urlencode(sorted(self.values.items()))
+
+	@property
+	def range(self) -> str:
+		"""The raw `range` filter, defaulting to today."""
+		return self.values.get('range', 'today')
+
+	@property
+	def branch(self) -> str:
+		"""The active branch."""
+		return self.values.get('branch', 'olaya')
+
+	@property
+	def venue(self) -> str:
+		"""The active venue type."""
+		return self.values.get('venue', 'cafe')
 
 
-Scope = Annotated[RequestScope, fastapi.Depends(resolve_scope)]
-
-
-def _element_or_404(element_id: str) -> models.Element:
-	"""Looks up a catalogue element.
-
-	Args:
-		element_id: The element's catalogue id.
-
-	Returns:
-		The element.
-
-	Raises:
-		fastapi.HTTPException: No element carries that id.
-	"""
-	element = catalogue.ELEMENTS_BY_ID.get(element_id)
-	if element is None:
-		raise fastapi.HTTPException(
-			status_code=404, detail=f'unknown element: {element_id}'
-		)
-	return element
-
+Scope = Annotated[Filters, fastapi.Depends(Filters)]
 
 app = fastapi.FastAPI(
 	title='AIN dashboard API',
-	version='0.1.0',
-	summary='Read-only KPI feed for the AIN video-analytics dashboard.',
+	version='0.2.0',
+	summary='Layout, KPI payloads and alert rules for the AIN dashboard.',
 )
 
 app.add_middleware(
 	cors.CORSMiddleware,
 	allow_origins=os.environ.get('AIN_CORS_ORIGINS', '*').split(','),
-	allow_methods=['GET'],
+	allow_methods=['GET', 'POST', 'DELETE'],
 	allow_headers=['*'],
 )
 
 
 @app.get('/health')
 def health() -> dict[str, str]:
-	"""Reports that the service is up."""
+	"""Reports that the service is up, and what is behind it."""
 	return {'status': 'ok', 'source': 'dummy'}
 
 
-@app.get('/api/catalogue')
-def read_catalogue() -> models.Catalogue:
-	"""Returns cameras, filters and every section in one call."""
-	return catalogue.CATALOGUE
+@app.get('/api/dashboard/config', response_model_exclude_none=True)
+def read_config(scope: Scope) -> models.DashboardConfig:
+	"""Returns the whole navigation and layout for one language."""
+	return catalogue.build_config(scope.locale)
 
 
-@app.get('/api/cameras')
-def read_cameras() -> list[models.Camera]:
-	"""Returns the camera layout as installed at the branch."""
-	return catalogue.CAMERAS
-
-
-@app.get('/api/filters')
-def read_filters() -> models.FilterCatalogue:
-	"""Returns the options behind the global filter controls."""
-	return catalogue.FILTERS
-
-
-@app.get('/api/sections')
-def read_sections() -> list[models.Section]:
-	"""Returns the catalogue sections and the elements they group."""
-	return catalogue.SECTIONS
-
-
-@app.get('/api/sections/{section_id}')
-def read_section(section_id: str) -> models.Section:
-	"""Returns one section.
+@app.get('/api/elements/{element_id}', response_model_exclude_none=True)
+def read_element(element_id: str, scope: Scope) -> models.ElementResponse:
+	"""Returns one card's payload.
 
 	Args:
-		section_id: The section's catalogue id.
+		element_id: The catalogue id from the path.
+		scope: The active filters.
 
 	Returns:
-		The section and its elements.
+		The payload, already shaped for the element's type.
 
 	Raises:
-		fastapi.HTTPException: No section carries that id.
+		fastapi.HTTPException: The catalogue has no such element.
 	"""
-	section = catalogue.SECTIONS_BY_ID.get(section_id)
-	if section is None:
-		raise fastapi.HTTPException(
-			status_code=404, detail=f'unknown section: {section_id}'
+	try:
+		return payloads.build_element(
+			element_id, scope.seed_key, scope.locale, scope.range
 		)
-	return section
+	except payloads.UnknownElementError as error:
+		raise fastapi.HTTPException(
+			status_code=404, detail=f'unknown element: {element_id}'
+		) from error
 
 
-@app.get('/api/elements')
-def read_elements(
-	section: str | None = None,
-	camera: str | None = None,
-) -> list[models.Element]:
-	"""Returns catalogue elements, optionally narrowed.
-
-	Args:
-		section: Keep only elements in this section.
-		camera: Keep only elements derived from this camera.
-
-	Returns:
-		The matching elements, in catalogue order.
-	"""
-	elements = catalogue.ELEMENTS
-	if section is not None:
-		elements = [e for e in elements if e.section_id == section]
-	if camera is not None:
-		elements = [e for e in elements if camera in e.cameras]
-	return elements
-
-
-@app.get('/api/elements/{element_id}')
-def read_element(element_id: str) -> models.Element:
-	"""Returns one element's catalogue entry."""
-	return _element_or_404(element_id)
-
-
-@app.get('/api/elements/{element_id}/data')
-def read_element_data(element_id: str, scope: Scope) -> models.ElementData:
-	"""Returns the payload the front end draws for one element."""
-	return dummy.element_data(
-		_element_or_404(element_id), scope.window, scope.key
-	)
-
-
-@app.get('/api/elements/{element_id}/instances')
-def read_element_instances(
-	element_id: str, scope: Scope
-) -> list[models.Instance]:
-	"""Returns the instance log behind a clickable alert card.
+@app.get(
+	'/api/elements/{element_id}/instances', response_model_exclude_none=True
+)
+def read_instances(element_id: str, scope: Scope) -> models.InstanceLog:
+	"""Returns the occurrences behind one card.
 
 	Args:
-		element_id: The element's catalogue id.
-		scope: The resolved global filters.
+		element_id: The catalogue id from the path.
+		scope: The active filters.
 
 	Returns:
-		One entry per occurrence, newest first.
+		The log. An element with nothing to show returns an empty list.
 
 	Raises:
-		fastapi.HTTPException: The element has no instance log.
+		fastapi.HTTPException: The catalogue has no such element.
 	"""
-	element = _element_or_404(element_id)
-	if not element.has_instances:
-		raise fastapi.HTTPException(
-			status_code=404,
-			detail=f'{element_id} has no instance log',
+	try:
+		return payloads.build_instance_log(
+			element_id, scope.seed_key, scope.locale, scope.range
 		)
-	return dummy.instances(element, scope.window, scope.key)
+	except payloads.UnknownElementError as error:
+		raise fastapi.HTTPException(
+			status_code=404, detail=f'unknown element: {element_id}'
+		) from error
 
 
-@app.get('/api/alerts')
-def read_alert_feed(
-	scope: Scope,
-	limit: int = _DEFAULT_ALERT_FEED_LIMIT,
-) -> list[models.Instance]:
-	"""Returns the newest occurrences across every alerting element.
+@app.get('/api/alerts/monitors', response_model_exclude_none=True)
+def read_monitors(scope: Scope) -> models.AlertMonitorList:
+	"""Returns every monitor an alert rule can be built on."""
+	return alerts.list_monitors(scope.seed_key, scope.locale)
+
+
+@app.get('/api/alerts/rules', response_model_exclude_none=True)
+def read_rules(scope: Scope) -> models.AlertRuleList:
+	"""Returns every stored rule, localised at read time."""
+	return alerts.list_rules(scope.locale)
+
+
+@app.post(
+	'/api/alerts/rules', status_code=201, response_model_exclude_none=True
+)
+def create_rule(
+	draft: models.AlertRuleDraft, scope: Scope
+) -> models.AlertRule:
+	"""Stores one rule and returns the canonical record.
 
 	Args:
-		scope: The resolved global filters.
-		limit: How many entries to return.
+		draft: The posted rule.
+		scope: The active filters.
 
 	Returns:
-		The most recent instances, newest first.
+		The created rule, as the next read would return it.
+
+	Raises:
+		fastapi.HTTPException: The draft names an unknown monitor.
 	"""
-	feed = []
-	for element in catalogue.ELEMENTS:
-		if not element.has_instances:
-			continue
-		feed.extend(dummy.instances(element, scope.window, scope.key))
-	feed.sort(key=lambda entry: entry.occurred_at, reverse=True)
-	return feed[:limit]
+	try:
+		return alerts.create_rule(
+			draft, scope.locale, scope.branch, scope.venue
+		)
+	except alerts.UnknownMonitorError as error:
+		raise fastapi.HTTPException(
+			status_code=400,
+			detail=f'unknown monitor: {draft.monitor_id}',
+		) from error
 
 
-@app.get('/api/employees')
-def read_employees(scope: Scope) -> list[models.Employee]:
-	"""Returns the derived timesheet for the rostered staff."""
-	return dummy.employees(scope.window, scope.key)
+@app.delete('/api/alerts/rules/{rule_id}', status_code=204)
+def delete_rule(rule_id: str) -> responses.Response:
+	"""Deletes one rule.
+
+	Args:
+		rule_id: The rule to remove.
+
+	Returns:
+		An empty 204, whether or not the rule was there. Delete is
+		idempotent: the frontend re-reads the list either way.
+	"""
+	alerts.delete_rule(rule_id)
+	return responses.Response(status_code=204)
+
+
+@app.get('/api/clips/{element_id}/{index}.mp4')
+@app.get('/api/cameras/{element_id}/stream.m3u8')
+def read_media(element_id: str, index: int | None = None) -> None:
+	"""Stands in for the media the payloads link to.
+
+	Args:
+		element_id: The element or camera named in the URL.
+		index: Which occurrence, for a clip.
+
+	Raises:
+		fastapi.HTTPException: Always. The dummy backend serves no
+			media, and a 404 renders as a broken link rather than a
+			broken page.
+	"""
+	raise fastapi.HTTPException(status_code=404, detail=_MEDIA_DETAIL)
