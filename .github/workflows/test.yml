@@ -16,9 +16,14 @@ concurrency:
   group: test-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # The newest version every app is expected to work on, tested alongside each
+  # app's own floor.
+  CEILING_PYTHON: "3.13"
+
 jobs:
   discover:
-    name: discover apps
+    name: discover suites
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.scan.outputs.matrix }}
@@ -56,13 +61,34 @@ jobs:
             exit 1
           fi
 
-          matrix=$(printf '%s\n' "${apps[@]}" \
-            | jq -R -s -c '[splits("\n") | select(length > 0)]')
+          # Each app declares its own requires-python, so the matrix cannot be
+          # one hardcoded pair: pinning 3.9 onto an app that requires 3.12 fails
+          # at install time and says nothing about the app.
+          matrix=$(CEILING="$CEILING_PYTHON" python3 - "${apps[@]}" <<'PY'
+          import json, os, re, sys, tomllib, pathlib
+
+          ceiling = os.environ["CEILING"]
+          include = []
+          for app in sys.argv[1:]:
+              config = pathlib.Path("applications", app, "pyproject.toml")
+              floor = None
+              if config.exists():
+                  spec = tomllib.loads(config.read_text()).get("project", {}).get("requires-python", "")
+                  found = re.search(r">=\s*(\d+\.\d+)", spec)
+                  floor = found.group(1) if found else None
+              versions = sorted({v for v in (floor, ceiling) if v},
+                                key=lambda v: tuple(int(p) for p in v.split(".")))
+              for version in versions:
+                  include.append({"app": app, "python": version})
+          print(json.dumps(include))
+          PY
+          )
+
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
           {
             echo "### Test suites"
-            printf -- '- %s\n' "${apps[@]}"
+            echo "$matrix" | jq -r '.[] | "- \(.app) on Python \(.python)"'
             for name in ${skipped[@]+"${skipped[@]}"}; do
               printf -- '- %s (no tests)\n' "$name"
             done
@@ -75,21 +101,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        app: ${{ fromJSON(needs.discover.outputs.matrix) }}
-        # The floor and the ceiling: 3.9 is what pyproject claims to support,
-        # 3.12 is what the published image runs.
-        python: ["3.9", "3.12"]
+        include: ${{ fromJSON(needs.discover.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v5
         with:
-          python-version: ${{ matrix.python }}
+          enable-cache: true
 
-      - name: install
-        working-directory: applications/${{ matrix.app }}
-        run: pip install -e '.[dev]'
-
+      # uv covers both conventions in this repo: the dev dependency-group that
+      # backend declares (PEP 735, which pip's extras syntax cannot reach) and
+      # the dev extra that rtsp-video-streaming declares.
       - name: pytest
         working-directory: applications/${{ matrix.app }}
-        run: pytest -q
+        run: uv run --python ${{ matrix.python }} --all-extras pytest -q
