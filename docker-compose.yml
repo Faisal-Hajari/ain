@@ -4,9 +4,11 @@
 #   docker compose up --build
 #
 # The dashboard is then on http://localhost:3000 and every camera on the one
-# server: rtsp://localhost:8554/camNN (use -rtsp_transport tcp; RTP over UDP
-# goes out from ports that are not published). Cameras used to be a container
-# each on ports 8603-8615, so the path is unchanged and only the port moved.
+# server: HLS at http://localhost:8888/camNN/ (what the tiles play, proxied
+# through the dashboard's own origin as /cameras/camNN/) and RTSP at
+# rtsp://localhost:8554/camNN (use -rtsp_transport tcp; RTP over UDP goes out
+# from ports that are not published). Cameras used to be a container each on
+# ports 8603-8615, so the path is unchanged and only the port moved.
 
 services:
   backend:
@@ -27,15 +29,20 @@ services:
       - "3000:80"
     depends_on:
       - backend
+      # nginx resolves both upstreams when it loads its config, so it has
+      # to start after them or it exits.
+      - cameras
     restart: unless-stopped
 
-  # MediaMTX serves all ten cameras. Each recording is mounted under the name
-  # its path expects, and mediamtx.yml turns the first reader on a path into one
-  # looping ffmpeg. Nothing is built: this is the upstream image, pinned.
+  # MediaMTX serves all ten cameras over RTSP and HLS. Each recording is
+  # mounted under the name its path expects, and mediamtx.yml turns the first
+  # reader on a path into one looping ffmpeg. Nothing is built: this is the
+  # upstream image, pinned.
   cameras:
     image: bluenviron/mediamtx:1.20.1-ffmpeg
     ports:
       - "8554:8554"
+      - "8888:8888"
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
       - ./videos/cctv/cam3_2026-07-27_21-57-55.mp4:/videos/cam3.mp4:ro

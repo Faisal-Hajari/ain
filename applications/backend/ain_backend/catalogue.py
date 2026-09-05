@@ -42,6 +42,20 @@ class CameraSpec:
 	id: str
 	zone: i18n.Text
 
+	@property
+	def stream_url(self) -> str:
+		"""Where a browser plays this camera.
+
+		Returns:
+			The camera's HLS playlist. The dashboard's own origin
+			proxies this path straight through - nginx in the frontend
+			image, the dev-server proxy under vite - so the tile plays a
+			same-origin URL and no hostname is baked into a payload.
+			The path is the id without its leading zero, which is what
+			the recordings are named.
+		"""
+		return f'/cam{int(self.id)}/index.m3u8'
+
 
 @dataclasses.dataclass(frozen=True)
 class ElementSpec:
@@ -92,7 +106,7 @@ CAMERAS: tuple[CameraSpec, ...] = (
 		'Outdoor street frontage and parking bays.',
 		'واجهة الشارع ومواقف السيارات.',
 	)),
-	CameraSpec('07', i18n.Text(
+	CameraSpec('09', i18n.Text(
 		'Outdoor parking area and street frontage.',
 		'منطقة المواقف الخارجية وواجهة الشارع.',
 	)),
@@ -130,7 +144,7 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		),
 		type=_Type.STAT_GROUP, kind=_Kind.MONITOR,
 		updates=_Cadence.REALTIME, span=2,
-		cameras=('03', '04', '06', '07', '10'),
+		cameras=('03', '04', '06', '09', '10'),
 		unit=i18n.PEOPLE,
 		value_min=8, value_max=60,
 	),
@@ -250,11 +264,11 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		id='camera-status',
 		title=i18n.Text('Feed health', 'حالة البث'),
 		description=i18n.Text(
-			'Cameras reporting frames right now.',
-			'الكاميرات التي ترسل بثاً في الوقت الحالي.',
+			'Cameras reporting frames now, and how many were down.',
+			'الكاميرات التي ترسل بثاً الآن، وعدد ما توقف منها.',
 		),
 		type=_Type.STAT_GROUP, kind=_Kind.MONITOR,
-		updates=_Cadence.REALTIME, span=2,
+		updates=_Cadence.REALTIME, span=4,
 	),
 	ElementSpec(
 		id='camera-feeds',

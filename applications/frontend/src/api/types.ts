@@ -153,7 +153,7 @@ export interface CameraFeed {
   zone: string
   status: 'online' | 'offline'
   statusLabel: string
-  /** Live stream for the tile; absent while a feed is down. */
+  /** Page the tile plays in an iframe; absent while a feed is down. */
   streamUrl?: string
   thumbnailUrl?: string
 }

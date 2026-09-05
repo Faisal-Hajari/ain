@@ -115,6 +115,28 @@ from `ain_backend/models.py`, so it cannot drift from what the service returns.
 `data` is discriminated by the element's `type`, and the frontend renders
 exactly the types the config declares - no more.
 
+### Camera streams
+
+A `camera-grid` feed carries everything a tile needs to play: `streamUrl` is an
+**HLS playlist**, and it is **absent when the feed is down** - that absence is
+what decides between a player and a placeholder, so do not send a URL for a
+camera that cannot serve one.
+
+The reference stack points `streamUrl` at `/camNN/index.m3u8`, MediaMTX's
+playlist, proxied onto the dashboard's origin so the tile is same-origin and no
+hostname is baked into a payload. The frontend plays it in a `<video>` it owns,
+so the URL has to be a playlist: a player page would render as a broken video,
+and a format other than HLS will not play at all.
+
+Counts have to agree: the `camera-status` stats, that card's own trend and the
+grid's `status` values are three views of one truth, and a user reads them on
+the same screen.
+
+A `stat-group` trend may chart a subset of the card's stats - Feed health draws
+only the "No signal" line, because a flat total and its complement would say the
+same thing three times - but every series must name one of the stats, and its
+last point must be the number that stat prints.
+
 ---
 
 ## 5. Localization
@@ -186,9 +208,8 @@ on them.
 4. **Alert-rule evaluation.** The frontend creates and lists rules; nothing
    defines what happens when one fires — no notification channel, no fired-alert
    feed, no acknowledge flow.
-5. **Camera streaming.** `streamUrl` is in the contract but no player is wired
-   up; the tiles show a placeholder. The stream format and auth model need
-   deciding before that is built.
+5. **Camera stream auth.** The tiles play whatever `streamUrl` points at, with
+   no credentials. A stream server that needs auth has no way to be told yet.
 6. **Rule scoping.** Rules are created with the active filters in the query
    string. Whether a rule belongs to a branch, a venue type, or the account is
    not specified.
