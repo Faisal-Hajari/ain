@@ -1,5 +1,9 @@
-.venv
-tests
-__pycache__
-*.pyc
-.pytest_cache
+.venv/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+tests/
+Dockerfile
+.dockerignore
+compose.yaml
+README.md
