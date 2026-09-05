@@ -1,0 +1,83 @@
+@import 'tailwindcss';
+
+/* Dark mode follows the OS; `data-theme` on <html> overrides it. */
+@theme {
+  --color-surface: #ffffff;
+  --color-canvas: #f4f6f9;
+  --color-border: #e3e8ef;
+  --color-ink: #101828;
+  --color-muted: #667085;
+
+  --color-brand: #1f6feb;
+  --color-ok: #12805c;
+  --color-info: #1f6feb;
+  --color-warn: #b25e09;
+  --color-critical: #c92a2a;
+
+  /* Chart palette: elements reference these by index, never by hex. */
+  --color-chart-0: #1f6feb;
+  --color-chart-1: #12805c;
+  --color-chart-2: #b25e09;
+  --color-chart-3: #7048e8;
+  --color-chart-4: #c92a2a;
+  --color-chart-5: #0b7285;
+
+  --radius-card: 14px;
+}
+
+:root {
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --color-surface: #151a22;
+    --color-canvas: #0d1117;
+    --color-border: #263041;
+    --color-ink: #e8edf5;
+    --color-muted: #94a3b8;
+    --color-chart-0: #6ea8fe;
+    --color-chart-1: #4ade80;
+    --color-chart-2: #fbbf77;
+    --color-chart-3: #b197fc;
+    --color-chart-4: #ff8787;
+    --color-chart-5: #5bc0de;
+  }
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+  --color-surface: #151a22;
+  --color-canvas: #0d1117;
+  --color-border: #263041;
+  --color-ink: #e8edf5;
+  --color-muted: #94a3b8;
+  --color-chart-0: #6ea8fe;
+  --color-chart-1: #4ade80;
+  --color-chart-2: #fbbf77;
+  --color-chart-3: #b197fc;
+  --color-chart-4: #ff8787;
+  --color-chart-5: #5bc0de;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: ui-sans-serif, system-ui, 'Segoe UI', sans-serif;
+}
+
+[dir='rtl'] body {
+  font-family: ui-sans-serif, system-ui, 'Noto Sans Arabic', sans-serif;
+}
+
+/* Recharts sizes itself from the parent box; keep it from forcing width. */
+.recharts-wrapper {
+  inset-inline-start: 0;
+}
