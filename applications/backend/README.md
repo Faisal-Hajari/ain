@@ -1,12 +1,12 @@
 # AIN backend
 
 The read side of the AIN dashboard: layout, KPI payloads and alert rules.
-Everything that feeds the database runs in other micro-services.
+Everything that feeds the database runs in other microservices.
 
-Values are **dummy** — deterministic, generated per request from the element id
-and the active filters. `ain_backend/payloads.py` is the only module that
-invents a number; replacing it with real read models leaves the contract, the
-catalogue and the routes untouched.
+Values are placeholders — deterministic, generated per request from the
+element id and the active filters. `ain_backend/payloads.py` is the only
+module that invents a number; replacing it with real read models leaves the
+contract, the catalogue and the routes untouched.
 
 The service implements `applications/frontend/src/api/types.ts`. The frontend
 is a renderer with no domain knowledge, so this backend owns the layout, every
@@ -15,17 +15,25 @@ is good news.
 
 ## Run it
 
+The service needs [uv](https://docs.astral.sh/uv/). From
+`applications/backend`, start a reloading dev server on port 8000:
+
 ```bash
 uv run uvicorn ain_backend.main:app --reload --port 8000
 ```
+
+To run the contract tests:
 
 ```bash
 uv run pytest
 ```
 
-Schema and a request console: <http://localhost:8000/docs>.
+To browse the schema and try requests, open the
+[API docs](http://localhost:8000/docs).
 
 ## Endpoints
+
+The service exposes these routes:
 
 | Route | Returns |
 | --- | --- |
@@ -44,18 +52,20 @@ today". Unknown parameters are ignored.
 
 ## Where things live
 
+Each module owns one concern:
+
 | Module | Owns |
 | --- | --- |
 | `models.py` | the wire contract; snake_case here, camelCase on the wire |
 | `catalogue.py` | cameras, filters, elements, sections — the layout |
 | `i18n.py` | every localised string that is not an element title |
 | `formatting.py` | display strings and judgement (`severity`, `sentiment`) |
-| `payloads.py` | the dummy generator, one builder per element type |
+| `payloads.py` | the placeholder generator, one builder per element type |
 | `alerts.py` | monitors, and the rule store |
 | `main.py` | routes |
 
 Adding a KPI is one `ElementSpec` in `catalogue.py` plus, if it needs a shape no
-builder covers yet, a branch in `payloads.py`. No frontend change.
+builder covers, a branch in `payloads.py`. No frontend change.
 
 ## Stateless, with one exception
 
@@ -64,9 +74,9 @@ answer any request and nothing needs sticky sessions.
 
 Alert rules cannot be: the frontend keeps no copy, so a rule it POSTs has to
 come back from the next `GET`. `alerts.RuleStore` is a process-local dict —
-**it does not survive a restart, and two replicas would disagree.** It is
-written as a repository so that swapping in a table touches only that class;
-the `TODO` at the top of `alerts.py` marks it.
+it does not survive a restart, and two replicas would disagree. It is written
+as a repository so that swapping in a table touches only that class; the
+`TODO` at the top of `alerts.py` marks it.
 
 ## Determinism
 
@@ -81,16 +91,16 @@ when the data would have.
 
 ## Decisions taken on the open questions
 
-The requirements doc leaves seven open. Where this backend had to pick:
+The requirements document leaves seven open. Where this backend had to pick:
 
 - **Timezone** — `Asia/Riyadh`. `today`, `createdLabel` and every pre-formatted
   timestamp are branch-local (`catalogue.BRANCH_TIMEZONE`).
 - **Instance pagination** — capped at 12 per element. `total` equals the list
-  length today, so nothing is silently dropped.
+  length, so nothing is silently dropped.
 - **Multi-branch scoping** — `branch=all` re-seeds the generator; it does not
   roll up or split per branch.
 - **Rule scoping** — the active `branch` and `venue` are stored on the rule but
-  do not filter the list yet.
+  do not filter the list.
 - **Auth** — none. No header is read, nothing is rejected.
 - **Media** — `clipUrl`, `streamUrl` and `thumbnailUrl` are placeholders.
   `/api/clips/...` and `/api/cameras/.../stream.m3u8` answer `404` with a JSON
@@ -99,9 +109,12 @@ The requirements doc leaves seven open. Where this backend had to pick:
 
 ## Docker
 
+To build the image and run it on port 8000:
+
 ```bash
 docker build -t ain-backend:dev . && docker run --rm -p 8000:8000 ain-backend:dev
 ```
 
 `compose.yaml` runs the same image with CORS pointed at a local dashboard dev
-server. The repo's `build-images` workflow publishes it on every push to `main`.
+server. The repository's `build-images` workflow publishes it on every push
+to `main`.

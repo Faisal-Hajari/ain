@@ -3,8 +3,8 @@
 Everything else in this service is stateless and derived. Rules are the
 exception: the frontend keeps no copy, so a created rule has to come
 back from the next read. That store is a process-local dict here, which
-is enough for a dummy backend and wrong for a real one - it does not
-survive a restart and two replicas would disagree.
+is enough for a placeholder backend and wrong for a real one - it does
+not survive a restart and two replicas would disagree.
 
 TODO: move `_RULES` to a database table. The rest of this module already
 treats it as a repository, so only `RuleStore` changes.
