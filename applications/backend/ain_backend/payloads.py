@@ -27,21 +27,6 @@ _DWELL_BUCKETS = ('0-10', '10-20', '20-30', '30-45', '45-60', '60+')
 _MONTH_DAYS = 30
 _TREND_POINTS = 12
 
-_STAFF = (
-	i18n.Text('A. Nasser', 'أ. ناصر'),
-	i18n.Text('M. Saleh', 'م. صالح'),
-	i18n.Text('R. Kumar', 'ر. كومار'),
-	i18n.Text('L. Haddad', 'ل. حداد'),
-	i18n.Text('S. Otieno', 'س. أوتينو'),
-	i18n.Text('F. Aziz', 'ف. عزيز'),
-)
-
-_PARTY_SIZES = (
-	i18n.Text('1', '١'),
-	i18n.Text('2', '٢'),
-	i18n.Text('3+', '٣+'),
-)
-
 # How long a card's data is considered current, which is what makes
 # `updatedAt` the data's timestamp rather than the request's.
 _FRESHNESS_SECONDS: dict[models.UpdateCadence, int] = {
@@ -274,12 +259,6 @@ def _split_stats(context: _Context) -> models.StatGroupPayload:
 		)
 	latest = points[-1]
 	labels = (i18n.TOTAL, i18n.INDOOR, i18n.OUTDOOR)
-	if context.spec.id == 'attendance-summary':
-		labels = (
-			i18n.Text('Rostered', 'المجدولون'),
-			i18n.Text('On-site', 'في الموقع'),
-			i18n.Text('Absent', 'غائبون'),
-		)
 	delta = formatting.delta_between(
 		_numeric(points[0], 'total'),
 		_numeric(latest, 'total'),
@@ -385,17 +364,10 @@ def _build_histogram(context: _Context) -> models.SeriesPayload:
 	)
 
 
-def _bar_categories(context: _Context) -> list[str]:
-	"""Resolves what a bar chart is broken down by."""
-	if context.spec.id == 'party-size':
-		return [context.text(size) for size in _PARTY_SIZES]
-	return [context.text(member) for member in _STAFF]
-
-
 def _build_bar(context: _Context) -> models.SeriesPayload:
 	"""One bar per category."""
 	spec = context.spec
-	categories = _bar_categories(context)
+	categories = context.x_labels
 	return models.SeriesPayload(
 		series=[
 			models.SeriesDef(
@@ -523,7 +495,7 @@ def _camera_label(camera_id: str, locale: i18n.Locale) -> str:
 	return f'{i18n.CAMERA.get(locale)} {camera_id}'
 
 
-def _build_camera_coverage(context: _Context) -> models.TablePayload:
+def _build_table(context: _Context) -> models.TablePayload:
 	"""The camera layout, one row per feed."""
 	return models.TablePayload(
 		columns=[
@@ -542,39 +514,6 @@ def _build_camera_coverage(context: _Context) -> models.TablePayload:
 			for camera in catalogue.CAMERAS
 		],
 	)
-
-
-def _build_hours_worked(context: _Context) -> models.TablePayload:
-	"""First-seen to last-seen per staff member."""
-	spec = context.spec
-	return models.TablePayload(
-		columns=[
-			models.TableColumn(
-				key='staff', label=context.text(i18n.STAFF)
-			),
-			models.TableColumn(
-				key='hours',
-				label=context.text(i18n.HOURS_WORKED),
-				align='end',
-			),
-		],
-		rows=[
-			{
-				'staff': context.text(member),
-				'hours': context.format(
-					context.rand.uniform(spec.value_min, spec.value_max)
-				),
-			}
-			for member in _STAFF
-		],
-	)
-
-
-def _build_table(context: _Context) -> models.TablePayload:
-	"""Picks the table this element is."""
-	if context.spec.id == 'camera-coverage':
-		return _build_camera_coverage(context)
-	return _build_hours_worked(context)
 
 
 def _build_camera_grid(context: _Context) -> models.CameraGridPayload:
