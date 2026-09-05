@@ -61,7 +61,7 @@ Each module owns one concern:
 | `i18n.py` | every localised string that is not an element title |
 | `formatting.py` | display strings and judgement (`severity`, `sentiment`) |
 | `payloads.py` | the placeholder generator, one builder per element type |
-| `alerts.py` | monitors, and the rule store |
+| `alerts.py` | monitors, and the in-process rule dict |
 | `main.py` | routes |
 
 Adding a KPI is one `ElementSpec` in `catalogue.py` plus, if it needs a shape no
@@ -73,10 +73,9 @@ Every read route is a pure function of the query string, so any replica can
 answer any request and nothing needs sticky sessions.
 
 Alert rules cannot be: the frontend keeps no copy, so a rule it POSTs has to
-come back from the next `GET`. `alerts.RuleStore` is a process-local dict —
-it does not survive a restart, and two replicas would disagree. It is written
-as a repository so that swapping in a table touches only that class; the
-`TODO` at the top of `alerts.py` marks it.
+come back from the next `GET`. `alerts.RULES` is a process-local dict — it
+does not survive a restart, and two replicas would disagree. The `TODO` at the
+top of `alerts.py` marks it as the one thing a real deployment has to replace.
 
 ## Determinism
 
@@ -102,9 +101,9 @@ The requirements document leaves seven open. Where this backend had to pick:
 - **Rule scoping** — the active `branch` and `venue` are stored on the rule but
   do not filter the list.
 - **Auth** — none. No header is read, nothing is rejected.
-- **Media** — `clipUrl`, `streamUrl` and `thumbnailUrl` are placeholders.
-  `/api/clips/...` and `/api/cameras/.../stream.m3u8` answer `404` with a JSON
-  body rather than hanging, so a click renders a broken link, not a broken page.
+- **Media** — `clipUrl`, `streamUrl` and `thumbnailUrl` are placeholders. The
+  service serves no media, so those paths answer `404`; a click renders a
+  broken link, not a broken page.
 - **Alert-rule evaluation** — nothing fires. Rules are stored and listed only.
 
 ## Docker
@@ -115,6 +114,7 @@ To build the image and run it on port 8000:
 docker build -t ain-backend:dev . && docker run --rm -p 8000:8000 ain-backend:dev
 ```
 
-`compose.yaml` runs the same image with CORS pointed at a local dashboard dev
-server. The repository's `build-images` workflow publishes it on every push
-to `main`.
+The repository root's `docker-compose.yml` runs this image alongside the
+dashboard and the camera server, with CORS pointed at a local dashboard dev
+server; `docker compose up --build` from the root brings the whole stack up.
+The `build-images` workflow publishes the image on every push to `main`.

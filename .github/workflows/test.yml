@@ -16,92 +16,17 @@ concurrency:
   group: test-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  # The newest version every app is expected to work on, tested alongside each
-  # app's own floor.
-  CEILING_PYTHON: "3.13"
-
 jobs:
-  discover:
-    name: discover suites
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.scan.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - id: scan
-        name: find applications with tests
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-
-          apps=()
-          skipped=()
-          for dir in applications/*/; do
-            name=${dir#applications/}
-            name=${name%/}
-            if [[ -d "${dir}tests" ]]; then
-              apps+=("$name")
-            else
-              skipped+=("$name")
-            fi
-          done
-
-          # Say so out loud, the way build-images.yml does for a missing
-          # Dockerfile: an app quietly excluded from CI is an app with no CI.
-          for name in ${skipped[@]+"${skipped[@]}"}; do
-            echo "::warning::applications/$name has no tests - not tested"
-          done
-
-          # No test suite anywhere means the workflow is silently vacuous; a
-          # green run that ran nothing is worse than a red one.
-          if [[ ${#apps[@]} -eq 0 ]]; then
-            echo "::error::no applications/*/tests found - nothing to test"
-            exit 1
-          fi
-
-          # Each app declares its own requires-python, so the matrix cannot be
-          # one hardcoded pair: pinning 3.9 onto an app that requires 3.12 fails
-          # at install time and says nothing about the app.
-          matrix=$(CEILING="$CEILING_PYTHON" python3 - "${apps[@]}" <<'PY'
-          import json, os, re, sys, tomllib, pathlib
-
-          ceiling = os.environ["CEILING"]
-          include = []
-          for app in sys.argv[1:]:
-              config = pathlib.Path("applications", app, "pyproject.toml")
-              floor = None
-              if config.exists():
-                  spec = tomllib.loads(config.read_text()).get("project", {}).get("requires-python", "")
-                  found = re.search(r">=\s*(\d+\.\d+)", spec)
-                  floor = found.group(1) if found else None
-              versions = sorted({v for v in (floor, ceiling) if v},
-                                key=lambda v: tuple(int(p) for p in v.split(".")))
-              for version in versions:
-                  include.append({"app": app, "python": version})
-          print(json.dumps(include))
-          PY
-          )
-
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-
-          {
-            echo "### Test suites"
-            echo "$matrix" | jq -r '.[] | "- \(.app) on Python \(.python)"'
-            for name in ${skipped[@]+"${skipped[@]}"}; do
-              printf -- '- %s (no tests)\n' "$name"
-            done
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  test:
-    name: ${{ matrix.app }} on py${{ matrix.python }}
-    needs: discover
+  backend:
+    name: backend on py${{ matrix.python }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.discover.outputs.matrix) }}
+        # 3.12 is the floor the backend declares in its requires-python; 3.13 is
+        # the newest release it is expected to work on. Running both catches a
+        # dependency that only resolves on one of them.
+        python: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
 
@@ -109,9 +34,41 @@ jobs:
         with:
           enable-cache: true
 
-      # uv covers both conventions in this repo: the dev dependency-group that
-      # backend declares (PEP 735, which pip's extras syntax cannot reach) and
-      # the dev extra that rtsp-video-streaming declares.
+      # The backend's test dependencies are a PEP 735 dependency-group, which
+      # uv installs by default; --all-extras also picks up any optional extra
+      # added later without editing this step.
       - name: pytest
-        working-directory: applications/${{ matrix.app }}
+        working-directory: applications/backend
         run: uv run --python ${{ matrix.python }} --all-extras pytest -q
+
+  frontend:
+    name: frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: applications/frontend/package-lock.json
+
+      # npm ci installs exactly the lockfile, so a green run here means the
+      # committed lockfile is the one that was tested.
+      - name: npm ci
+        working-directory: applications/frontend
+        run: npm ci
+
+      # Types, tests and lint are separate steps so a failure names itself in
+      # the job log rather than hiding behind one merged command.
+      - name: typecheck
+        working-directory: applications/frontend
+        run: npm run typecheck
+
+      - name: test
+        working-directory: applications/frontend
+        run: npm run test
+
+      - name: lint
+        working-directory: applications/frontend
+        run: npm run lint

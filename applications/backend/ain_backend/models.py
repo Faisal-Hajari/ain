@@ -31,15 +31,8 @@ class ElementType(enum.StrEnum):
 
 	KPI = 'kpi'
 	STAT_GROUP = 'stat-group'
-	GAUGE = 'gauge'
 	LINE = 'line'
-	BAR = 'bar'
-	STACKED_BAR = 'stacked-bar'
-	DONUT = 'donut'
 	HISTOGRAM = 'histogram'
-	HEATMAP = 'heatmap'
-	ALERT = 'alert'
-	TABLE = 'table'
 	CAMERA_GRID = 'camera-grid'
 
 
@@ -186,17 +179,6 @@ class StatGroupPayload(Model):
 	trend: TrendPayload | None = None
 
 
-class GaugePayload(Model):
-	"""A value inside a range."""
-
-	value: float
-	min: float
-	max: float
-	unit: str | None = None
-	value_label: str
-	severity: Severity | None = None
-
-
 class SeriesPayload(Model):
 	"""Line, bar, stacked-bar and histogram all draw this."""
 
@@ -205,41 +187,6 @@ class SeriesPayload(Model):
 	x_label: str | None = None
 	y_label: str | None = None
 	unit: str | None = None
-
-
-class DonutSlice(Model):
-	"""One slice of a donut."""
-
-	id: str
-	label: str
-	value: float
-	color_index: int | None = None
-
-
-class DonutPayload(Model):
-	"""Parts of a whole."""
-
-	slices: list[DonutSlice]
-	center_label: str | None = None
-	center_value: str | None = None
-
-
-class HeatmapPayload(Model):
-	"""A matrix, row-major, `cells[y][x]`."""
-
-	x_labels: list[str]
-	y_labels: list[str]
-	cells: list[list[float | None]]
-	unit: str | None = None
-
-
-class AlertPayload(Model):
-	"""A live state, not a count."""
-
-	severity: Severity
-	headline: str
-	detail: str | None = None
-	meta: str | None = None
 
 
 class CameraFeed(Model):
@@ -260,31 +207,11 @@ class CameraGridPayload(Model):
 	feeds: list[CameraFeed]
 
 
-class TableColumn(Model):
-	"""One column header."""
-
-	key: str
-	label: str
-	align: Literal['start', 'end'] | None = None
-
-
-class TablePayload(Model):
-	"""Rows in the order they are sent."""
-
-	columns: list[TableColumn]
-	rows: list[dict[str, str | float | None]]
-
-
 Payload = (
 	KpiPayload
 	| StatGroupPayload
-	| GaugePayload
 	| SeriesPayload
-	| DonutPayload
-	| HeatmapPayload
-	| AlertPayload
 	| CameraGridPayload
-	| TablePayload
 )
 
 

@@ -6,8 +6,7 @@ back from the next read. That store is a process-local dict here, which
 is enough for a placeholder backend and wrong for a real one - it does
 not survive a restart and two replicas would disagree.
 
-TODO: move `_RULES` to a database table. The rest of this module already
-treats it as a repository, so only `RuleStore` changes.
+TODO: move `RULES` to a database table.
 """
 
 import dataclasses
@@ -47,43 +46,7 @@ class StoredRule:
 	venue: str
 
 
-class RuleStore:
-	"""The one piece of state in the service.
-
-	Swap the dict for a table and every caller stays as it is.
-	"""
-
-	def __init__(self) -> None:
-		self._rules: dict[str, StoredRule] = {}
-
-	def clear(self) -> None:
-		"""Drops every rule. Used by tests and by nothing else."""
-		self._rules.clear()
-
-	def list(self) -> list[StoredRule]:
-		"""Returns every rule, newest first."""
-		return sorted(
-			self._rules.values(),
-			key=lambda rule: rule.created_on,
-			reverse=True,
-		)
-
-	def add(self, rule: StoredRule) -> StoredRule:
-		"""Stores one rule and returns the canonical record."""
-		self._rules[rule.id] = rule
-		return rule
-
-	def remove(self, rule_id: str) -> bool:
-		"""Deletes one rule, reporting whether it was there."""
-		return self._rules.pop(rule_id, None) is not None
-
-
-_RULES = RuleStore()
-
-
-def store() -> RuleStore:
-	"""Returns the process-wide rule store."""
-	return _RULES
+RULES: dict[str, StoredRule] = {}
 
 
 def _monitor_spec(monitor_id: str) -> catalogue.ElementSpec:
@@ -191,7 +154,14 @@ def list_rules(locale: i18n.Locale) -> models.AlertRuleList:
 		still open, so the active filters do not narrow this list.
 	"""
 	return models.AlertRuleList(
-		rules=[localise(rule, locale) for rule in store().list()]
+		rules=[
+			localise(rule, locale)
+			for rule in sorted(
+				RULES.values(),
+				key=lambda rule: rule.created_on,
+				reverse=True,
+			)
+		]
 	)
 
 
@@ -216,20 +186,19 @@ def create_rule(
 		UnknownMonitorError: The draft names something unwatchable.
 	"""
 	_monitor_spec(draft.monitor_id)
-	stored = store().add(
-		StoredRule(
-			id=str(uuid.uuid4()),
-			monitor_id=draft.monitor_id,
-			comparator=draft.comparator,
-			threshold=draft.threshold,
-			created_on=catalogue.today(),
-			branch=branch,
-			venue=venue,
-		)
+	stored = StoredRule(
+		id=str(uuid.uuid4()),
+		monitor_id=draft.monitor_id,
+		comparator=draft.comparator,
+		threshold=draft.threshold,
+		created_on=catalogue.today(),
+		branch=branch,
+		venue=venue,
 	)
+	RULES[stored.id] = stored
 	return localise(stored, locale)
 
 
 def delete_rule(rule_id: str) -> bool:
 	"""Deletes one rule, reporting whether it existed."""
-	return store().remove(rule_id)
+	return RULES.pop(rule_id, None) is not None

@@ -24,11 +24,6 @@ from ain_backend import payloads
 # and anything unrecognised here is ignored rather than seeded on.
 _FILTER_KEYS = ('branch', 'venue', 'range')
 
-_MEDIA_DETAIL = (
-	'no media in the dummy backend: clips and streams are placeholders'
-)
-
-
 class Filters:
 	"""The active filters, plus the seed they derive from.
 
@@ -193,20 +188,3 @@ def delete_rule(rule_id: str) -> responses.Response:
 	"""
 	alerts.delete_rule(rule_id)
 	return responses.Response(status_code=204)
-
-
-@app.get('/api/clips/{element_id}/{index}.mp4')
-@app.get('/api/cameras/{element_id}/stream.m3u8')
-def read_media(element_id: str, index: int | None = None) -> None:
-	"""Stands in for the media the payloads link to.
-
-	Args:
-		element_id: The element or camera named in the URL.
-		index: Which occurrence, for a clip.
-
-	Raises:
-		fastapi.HTTPException: Always. The dummy backend serves no
-			media, and a 404 renders as a broken link rather than a
-			broken page.
-	"""
-	raise fastapi.HTTPException(status_code=404, detail=_MEDIA_DETAIL)

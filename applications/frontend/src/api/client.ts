@@ -1,7 +1,4 @@
-import { mockRequest } from '@/mocks'
-
 const BASE_URL = '/api'
-const USE_MOCKS = import.meta.env.VITE_API_MOCK === 'true'
 
 export class ApiError extends Error {
   constructor(
@@ -27,9 +24,6 @@ function toSearchParams(params: QueryParams = {}): URLSearchParams {
 /** The single place the app talks to the network. */
 export async function apiGet<T>(path: string, params?: QueryParams, signal?: AbortSignal): Promise<T> {
   const search = toSearchParams(params)
-
-  if (USE_MOCKS) return (await mockRequest('GET', path, search)) as T
-
   const query = search.toString()
   const response = await fetch(`${BASE_URL}${path}${query ? `?${query}` : ''}`, {
     signal,
@@ -50,9 +44,6 @@ export async function apiSend<T>(
   params?: QueryParams,
 ): Promise<T> {
   const search = toSearchParams(params)
-
-  if (USE_MOCKS) return (await mockRequest(method, path, search, body)) as T
-
   const query = search.toString()
   const response = await fetch(`${BASE_URL}${path}${query ? `?${query}` : ''}`, {
     method,

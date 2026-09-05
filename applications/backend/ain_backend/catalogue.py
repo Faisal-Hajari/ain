@@ -131,7 +131,7 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		type=_Type.STAT_GROUP, kind=_Kind.MONITOR,
 		updates=_Cadence.REALTIME, span=2,
 		cameras=('03', '04', '06', '07', '10'),
-		value_format=_ValueFormat.PEOPLE, unit=i18n.PEOPLE,
+		unit=i18n.PEOPLE,
 		value_min=8, value_max=60,
 	),
 	ElementSpec(
@@ -154,7 +154,7 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		),
 		type=_Type.KPI, kind=_Kind.MONITOR, updates=_Cadence.REALTIME,
 		cameras=('03', '11'),
-		value_format=_ValueFormat.PEOPLE, unit=i18n.PEOPLE,
+		unit=i18n.PEOPLE,
 		value_min=0, value_max=18,
 	),
 	ElementSpec(
@@ -456,11 +456,10 @@ def monitor_elements() -> list[ElementSpec]:
 
 	Returns:
 		Every monitor carrying a numeric value - which excludes the
-		camera grid, the coverage table and the live-state alert card.
+		camera grid.
 	"""
 	numeric = (
-		_Type.KPI, _Type.STAT_GROUP, _Type.GAUGE, _Type.LINE,
-		_Type.HISTOGRAM, _Type.BAR,
+		_Type.KPI, _Type.STAT_GROUP, _Type.LINE, _Type.HISTOGRAM,
 	)
 	return [
 		element

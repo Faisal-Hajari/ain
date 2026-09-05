@@ -16,64 +16,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  discover:
-    name: discover apps
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.scan.outputs.matrix }}
-      registry_repo: ${{ steps.scan.outputs.registry_repo }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - id: scan
-        name: find applications with a Dockerfile
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-
-          apps=()
-          skipped=()
-          for dir in applications/*/; do
-            name=${dir#applications/}
-            name=${name%/}
-            if [[ -f "${dir}Dockerfile" ]]; then
-              apps+=("$name")
-            else
-              skipped+=("$name")
-            fi
-          done
-
-          for name in ${skipped[@]+"${skipped[@]}"}; do
-            echo "::warning::applications/$name has no Dockerfile - not built or published"
-          done
-
-          # An empty matrix would skip the build job and report a green run that
-          # published nothing. Fail instead: "nothing to build" is not success.
-          if [[ ${#apps[@]} -eq 0 ]]; then
-            echo "::error::no applications/*/Dockerfile found - nothing to build"
-            exit 1
-          fi
-
-          matrix=$(printf '%s\n' "${apps[@]}" \
-            | jq -R -s -c '[splits("\n") | select(length > 0) | {dir: ., image: ascii_downcase}]')
-
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          # ghcr.io rejects uppercase; the owner here is "Faisal-Hajari".
-          echo "registry_repo=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
-
-          {
-            echo "### Images to build"
-            printf -- '- %s\n' "${apps[@]}"
-          } >> "$GITHUB_STEP_SUMMARY"
-
   build:
-    name: build ${{ matrix.dir }}
-    needs: discover
+    name: build ${{ matrix.app }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.discover.outputs.matrix) }}
+        # Every application that ships a Dockerfile. A new one is a line here.
+        app: [backend, frontend]
     steps:
       - uses: actions/checkout@v4
 
@@ -85,17 +35,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # ghcr.io rejects uppercase and the owner here is "Faisal-Hajari", so the
+      # repository slug has to be lowercased before it can be part of a tag.
+      # GitHub expressions have no lowercase function; the shell does.
+      - name: lowercase the registry repository
+        run: echo "REGISTRY_REPO=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
       - uses: docker/build-push-action@v6
         with:
-          context: applications/${{ matrix.dir }}
-          file: applications/${{ matrix.dir }}/Dockerfile
+          context: applications/${{ matrix.app }}
+          file: applications/${{ matrix.app }}/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ needs.discover.outputs.registry_repo }}/${{ matrix.image }}:latest
-            ghcr.io/${{ needs.discover.outputs.registry_repo }}/${{ matrix.image }}:${{ github.sha }}
+            ghcr.io/${{ env.REGISTRY_REPO }}/${{ matrix.app }}:latest
+            ghcr.io/${{ env.REGISTRY_REPO }}/${{ matrix.app }}:${{ github.sha }}
           # Links the package to this repo so it inherits repo visibility.
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}

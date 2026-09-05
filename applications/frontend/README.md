@@ -28,8 +28,8 @@ Each element is a **monitor** (tracks a value) or an **alert** (counts
 occurrences and opens an instance log); the card badges which. Clicking a card
 pops it out into a large dialog - same query, same numbers, more room for the
 chart - and the header's expand button is the keyboard path to it. The renderer
-supports every element type in the contract - gauge, donut, heatmap, table, bar
-and stacked-bar views ship unused, ready for the next batch of KPIs.
+covers exactly the five types the backend serves; anything else renders a plain
+"not supported" line rather than a blank card.
 
 ## Stack
 
@@ -40,12 +40,12 @@ TanStack Query · React Router · Recharts.
 
 ```bash
 npm ci
-VITE_API_MOCK=true npm run dev
+npm run dev
 ```
 
-`VITE_API_MOCK=true` serves every `/api` call from `src/mocks/`, a deterministic
-transcription of the KPI catalog, so the UI runs with no backend. Drop the
-flag (see `.env.example`) and Vite proxies `/api` to `VITE_API_TARGET`.
+Vite proxies `/api` to `VITE_API_TARGET` (see `.env.example`), so run the
+backend alongside it - `docker compose up backend` from the repo root serves it
+on the default port.
 
 ```bash
 npm run build       # type-check + production bundle
@@ -76,8 +76,7 @@ An `ElementDef` says what to draw and how it behaves:
   id: 'queue-length',
   title: 'Queue length',
   description: 'Customers waiting at the counter.',
-  type: 'kpi',            // kpi | stat-group | gauge | line | bar | stacked-bar
-                          // | histogram | donut | heatmap | alert | table
+  type: 'kpi',            // kpi | stat-group | line | histogram | camera-grid
   kind: 'monitor',        // monitor | alert - drives the badge
   updates: 'realtime',    // sets the polling interval, nothing else
   span: 2,                // grid columns, 1-4
@@ -103,7 +102,6 @@ src/features/instances/   the instance-log drilldown
 src/features/alerts/      the alert-rule builder and list
 src/features/settings/    the settings dialog
 src/pages/                RootLayout (fetches config) and SectionPage
-src/mocks/                backend stand-in for VITE_API_MOCK=true
 ```
 
 Three rules keep it that way:
@@ -114,7 +112,7 @@ Three rules keep it that way:
   view is shareable and survives a reload without a store.
 - **The app has no state of its own.** There is not a single `useState`:
   server data lives in the query cache and everything else - which dialog is
-  open, which day the calendar is showing, the half-filled alert form - is a
+  open, whether the date panel is showing, the half-filled alert form - is a
   search param. Alert rules are backend records: the UI POSTs a draft and
   re-reads the list, never keeping a copy.
 
@@ -126,11 +124,11 @@ Three rules keep it that way:
 
 ## Filters and settings
 
-Branch, venue type and date range slice every panel. The date range is a
-calendar: quick presets for today / last 7 / last 30 days, and picking a day
-sets it as the start date (value becomes an ISO date instead of a preset key).
-The calendar draws from the backend's `today`, never the browser clock, so
-rendering stays pure.
+Branch, venue type and date range slice every panel. The date range offers
+quick presets for today / last 7 / last 30 days plus a native `<input
+type="date">`, and picking a day sets it as the start date (value becomes an ISO
+date instead of a preset key). That input's `max` is the backend's `today`,
+never the browser clock, so rendering stays pure.
 
 Language is a preference rather than a filter, so it sits in **Settings** at the
 foot of the nav.
@@ -146,12 +144,8 @@ rows all come back translated. The dictionary in `src/i18n/` covers UI chrome
 only - about two dozen strings, plus the two fixed enums (severity and
 monitor/alert) that are not backend text.
 
-The mock backend localizes the same way the real one must. Its generator seeds
-on the filters *excluding* `lang`, so switching language re-labels a card
-without moving its numbers.
-
 ## Container
 
 `Dockerfile` builds the bundle and serves it from nginx, which proxies `/api/`
-to the `backend` service. The repo workflow builds any `applications/*` folder
-with a Dockerfile.
+to the `backend` service. `.github/workflows/build-images.yml` publishes it on
+every push to `main`.

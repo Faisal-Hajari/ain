@@ -5,7 +5,6 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
 # The image ships against the real backend; nginx proxies /api to it.
-ENV VITE_API_MOCK=false
 RUN npm run build
 
 FROM nginx:1.27-alpine

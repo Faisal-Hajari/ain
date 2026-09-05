@@ -36,12 +36,14 @@ describe('useUrlWriter', () => {
   it('applies every key in one patch', () => {
     const { result } = renderHook(
       () => ({ write: useUrlWriter(), search: useLocation().search }),
-      { wrapper: wrapper('/?range=today') },
+      { wrapper: wrapper('/?range=today&calendar=open') },
     )
 
-    act(() => result.current.write({ range: '2026-09-02', calendar: null, calendarMonth: null }))
+    act(() => result.current.write({ range: '2026-09-02', calendar: null }))
 
-    expect(new URLSearchParams(result.current.search).get('range')).toBe('2026-09-02')
+    const search = new URLSearchParams(result.current.search)
+    expect(search.get('range')).toBe('2026-09-02')
+    expect(search.get('calendar')).toBeNull()
   })
 
   /**

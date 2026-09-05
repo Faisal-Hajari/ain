@@ -1,22 +1,12 @@
-# The whole stack: the dashboard, the API it talks to, and one RTSP camera
-# per recording in videos/cctv.
+# The whole stack: the dashboard, the API it talks to, and one RTSP server
+# serving every recording in videos/cctv as a camera.
 #
 #   docker compose up --build
 #
-# The dashboard is then on http://localhost:3000 and each camera on
-# rtsp://localhost:86NN/camNN (use -rtsp_transport tcp; RTP over UDP goes out
-# from ports that are not published).
-
-# Every camera differs only in its file, its path and its published port, so
-# the rest is written once here. Only cam3 carries the `build`: ten services
-# building the same context into the same tag race in BuildKit and the export
-# fails. Compose finishes every build before it starts a container, so by the
-# time these are created the tag is on the machine - `never` keeps compose from
-# looking for it in a registry it was never pushed to.
-x-rtsp-camera: &rtsp-camera
-  image: ain-rtsp-video-streaming:dev
-  pull_policy: never
-  restart: unless-stopped
+# The dashboard is then on http://localhost:3000 and every camera on the one
+# server: rtsp://localhost:8554/camNN (use -rtsp_transport tcp; RTP over UDP
+# goes out from ports that are not published). Cameras used to be a container
+# each on ports 8603-8615, so the path is unchanged and only the port moved.
 
 services:
   backend:
@@ -39,97 +29,23 @@ services:
       - backend
     restart: unless-stopped
 
-  # Each camera loops its own recording forever. The folder mounted at /videos
-  # holds a single file, so the loop is that one recording; RTSP_PATH is read by
-  # both the server and the image's health check, which keeps the two in step.
-  cam3:
-    <<: *rtsp-camera
-    # The one build; every other camera runs the image it produces.
-    build: ./applications/rtsp-video-streaming
-    environment:
-      RTSP_PATH: cam3
+  # MediaMTX serves all ten cameras. Each recording is mounted under the name
+  # its path expects, and mediamtx.yml turns the first reader on a path into one
+  # looping ffmpeg. Nothing is built: this is the upstream image, pinned.
+  cameras:
+    image: bluenviron/mediamtx:1.20.1-ffmpeg
     ports:
-      - "8603:8554"
+      - "8554:8554"
     volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
       - ./videos/cctv/cam3_2026-07-27_21-57-55.mp4:/videos/cam3.mp4:ro
-
-  cam4:
-    <<: *rtsp-camera
-    environment:
-      RTSP_PATH: cam4
-    ports:
-      - "8604:8554"
-    volumes:
       - ./videos/cctv/cam4_2026-07-27_22-58-12.mp4:/videos/cam4.mp4:ro
-
-  cam5:
-    <<: *rtsp-camera
-    environment:
-      RTSP_PATH: cam5
-    ports:
-      - "8605:8554"
-    volumes:
       - ./videos/cctv/cam5_2026-07-27_19-55-22.mp4:/videos/cam5.mp4:ro
-
-  cam6:
-    <<: *rtsp-camera
-    environment:
-      RTSP_PATH: cam6
-    ports:
-      - "8606:8554"
-    volumes:
       - ./videos/cctv/cam6_2026-07-27_20-56-11.mp4:/videos/cam6.mp4:ro
-
-  cam9:
-    <<: *rtsp-camera
-    environment:
-      RTSP_PATH: cam9
-    ports:
-      - "8609:8554"
-    volumes:
       - ./videos/cctv/cam9_2026-07-27_21-57-55.mp4:/videos/cam9.mp4:ro
-
-  cam10:
-    <<: *rtsp-camera
-    environment:
-      RTSP_PATH: cam10
-    ports:
-      - "8610:8554"
-    volumes:
       - ./videos/cctv/cam10_2026-07-27_19-55-22.mp4:/videos/cam10.mp4:ro
-
-  cam11:
-    <<: *rtsp-camera
-    environment:
-      RTSP_PATH: cam11
-    ports:
-      - "8611:8554"
-    volumes:
       - ./videos/cctv/cam11_2026-07-27_22-58-12.mp4:/videos/cam11.mp4:ro
-
-  cam12:
-    <<: *rtsp-camera
-    environment:
-      RTSP_PATH: cam12
-    ports:
-      - "8612:8554"
-    volumes:
       - ./videos/cctv/cam12_2026-07-27_19-55-22.mp4:/videos/cam12.mp4:ro
-
-  cam13:
-    <<: *rtsp-camera
-    environment:
-      RTSP_PATH: cam13
-    ports:
-      - "8613:8554"
-    volumes:
       - ./videos/cctv/cam13_2026-07-27_19-55-22.mp4:/videos/cam13.mp4:ro
-
-  cam15:
-    <<: *rtsp-camera
-    environment:
-      RTSP_PATH: cam15
-    ports:
-      - "8615:8554"
-    volumes:
       - ./videos/cctv/cam15_2026-07-27_19-55-22.mp4:/videos/cam15.mp4:ro
+    restart: unless-stopped
