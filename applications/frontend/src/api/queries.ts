@@ -13,7 +13,7 @@ import type {
 } from './types'
 
 /** How often a card re-asks the backend, by the cadence the catalogue gives it. */
-const POLL_MS: Record<UpdateCadence, number | false> = {
+export const POLL_MS: Record<UpdateCadence, number | false> = {
   realtime: 15_000,
   event: 60_000,
   visit: 120_000,

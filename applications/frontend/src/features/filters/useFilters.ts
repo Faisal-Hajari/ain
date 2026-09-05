@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import { useSearchParams } from 'react-router'
 import type { QueryParams } from '@/api/client'
 import type { FilterDef, Locale } from '@/api/types'
@@ -8,23 +9,29 @@ import type { FilterDef, Locale } from '@/api/types'
  * This has to be one call: react-router resolves each `setSearchParams` against
  * the current location rather than queueing them like a state setter, so two
  * calls in the same handler would leave only the last one's change.
+ *
+ * The returned function is stable, so effects that depend on it do not
+ * re-subscribe on every render.
  */
 export function useUrlWriter() {
   const [, setSearchParams] = useSearchParams()
 
-  return (patch: Record<string, string | null>) => {
-    setSearchParams(
-      (current) => {
-        const next = new URLSearchParams(current)
-        for (const [key, value] of Object.entries(patch)) {
-          if (value === null) next.delete(key)
-          else next.set(key, value)
-        }
-        return next
-      },
-      { replace: true },
-    )
-  }
+  return useCallback(
+    (patch: Record<string, string | null>) => {
+      setSearchParams(
+        (current) => {
+          const next = new URLSearchParams(current)
+          for (const [key, value] of Object.entries(patch)) {
+            if (value === null) next.delete(key)
+            else next.set(key, value)
+          }
+          return next
+        },
+        { replace: true },
+      )
+    },
+    [setSearchParams],
+  )
 }
 
 /**
@@ -35,7 +42,8 @@ export function useUrlWriter() {
 export function useUrlParam(key: string) {
   const [searchParams] = useSearchParams()
   const write = useUrlWriter()
-  return { value: searchParams.get(key), set: (value: string | null) => write({ [key]: value }) }
+  const set = useCallback((value: string | null) => write({ [key]: value }), [key, write])
+  return { value: searchParams.get(key), set }
 }
 
 /** The language is its own hook: the layout needs it before the config lands. */

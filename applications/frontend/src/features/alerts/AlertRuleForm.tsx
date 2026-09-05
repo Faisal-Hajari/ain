@@ -6,7 +6,7 @@ import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { Select } from '@/components/ui/Select'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { ErrorState } from '@/components/ui/StateBlocks'
-import { useUrlParam, useUrlWriter } from '@/features/filters/useFilters'
+import { useUrlParam } from '@/features/filters/useFilters'
 import { useLocale } from '@/i18n/LocaleProvider'
 
 /**
@@ -18,8 +18,6 @@ export function AlertRuleForm({ filters }: { filters: QueryParams }) {
   const { t } = useLocale()
   const monitorParam = useUrlParam('alertMonitor')
   const comparatorParam = useUrlParam('alertDirection')
-  const thresholdParam = useUrlParam('alertThreshold')
-  const write = useUrlWriter()
 
   const monitors = useAlertMonitors(filters)
   const create = useCreateAlertRule(filters)
@@ -50,16 +48,14 @@ export function AlertRuleForm({ filters }: { filters: QueryParams }) {
   const selected: AlertMonitor | undefined =
     list.find((monitor) => monitor.id === monitorParam.value) ?? list[0]
   const comparator: AlertComparator = comparatorParam.value === 'below' ? 'below' : 'above'
-  // The month's average is the starting suggestion until the user types a value.
-  const threshold = thresholdParam.value ?? String(selected?.monthlyAverageValue ?? 0)
 
   const submit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!selected) return
-    create.mutate(
-      { monitorId: selected.id, comparator, threshold: Number(threshold) },
-      { onSuccess: () => thresholdParam.set(null) },
-    )
+    const form = event.currentTarget
+    const threshold = Number(new FormData(form).get('threshold'))
+    if (!Number.isFinite(threshold)) return
+    create.mutate({ monitorId: selected.id, comparator, threshold }, { onSuccess: () => form.reset() })
   }
 
   return (
@@ -72,9 +68,7 @@ export function AlertRuleForm({ filters }: { filters: QueryParams }) {
               label={t.monitor}
               value={selected?.id ?? ''}
               options={list.map((monitor) => ({ value: monitor.id, label: monitor.label }))}
-              // Clearing the threshold alongside: the suggestion belonged to
-              // the previous monitor.
-              onChange={(value) => write({ alertMonitor: value, alertThreshold: null })}
+              onChange={(value) => monitorParam.set(value)}
             />
             <Select
               label={t.condition}
@@ -87,13 +81,17 @@ export function AlertRuleForm({ filters }: { filters: QueryParams }) {
             />
             <label className="flex flex-col gap-1">
               <span className="text-[11px] font-medium tracking-wide text-muted uppercase">{t.threshold}</span>
+              {/* Uncontrolled, keyed on the monitor: typing stays in the DOM
+                  instead of pushing a router navigation per keystroke, and
+                  switching monitor remounts the field onto the new suggestion. */}
               <input
+                key={selected?.id}
+                name="threshold"
                 type="number"
                 min={0}
                 step="any"
                 required
-                value={threshold}
-                onChange={(event) => thresholdParam.set(event.target.value)}
+                defaultValue={selected?.monthlyAverageValue ?? 0}
                 className="w-32 rounded-lg bg-surface px-3 py-2 text-sm text-ink tabular-nums ring-1 ring-border focus:ring-2 focus:ring-brand focus:outline-none"
               />
             </label>

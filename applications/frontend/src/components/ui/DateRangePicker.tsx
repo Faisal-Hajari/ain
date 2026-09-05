@@ -8,6 +8,22 @@ import { useUrlParam, useUrlWriter } from '@/features/filters/useFilters'
  * the value is either a preset key ("7d") or an ISO date ("2026-08-12").
  * `today` comes from the backend so nothing here reads the browser clock.
  */
+/**
+ * `2026-09-02`, and a real day. The round-trip is the point: V8 happily rolls
+ * `2026-02-31` over to March 3 rather than returning an invalid Date, so
+ * parsing alone would let a nonsense date through.
+ */
+function isValidDay(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const parsed = new Date(`${value}T00:00:00Z`)
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value
+}
+
+/** `2026-09`, month 01-12. */
+function isValidMonth(value: string | null): value is string {
+  return value !== null && /^\d{4}-(0[1-9]|1[0-2])$/.test(value)
+}
+
 export function DateRangePicker({
   paramKey,
   label,
@@ -32,15 +48,27 @@ export function DateRangePicker({
   const write = useUrlWriter()
   const choose = (next: string) => write({ [paramKey]: next, calendar: null, calendarMonth: null })
 
-  const isDate = /^\d{4}-\d{2}-\d{2}$/.test(value)
   const dayFormat = new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'short', year: 'numeric' })
   const monthFormat = new Intl.DateTimeFormat(locale, { month: 'long', year: 'numeric' })
   const weekdayFormat = new Intl.DateTimeFormat(locale, { weekday: 'narrow' })
 
+  // Both of these come straight off the URL, which anyone can edit or truncate.
+  // Intl.format throws RangeError on an invalid Date rather than returning a
+  // placeholder, so an unvalidated value here would white-screen the app.
+  const isDate = isValidDay(value)
   const preset = options.find((option) => option.value === value)
-  const trigger = preset ? preset.label : `${labels.from} ${dayFormat.format(new Date(value))}`
+  const trigger = preset
+    ? preset.label
+    : isDate
+      ? `${labels.from} ${dayFormat.format(new Date(value))}`
+      : (options[0]?.label ?? '')
 
-  const viewed = month.value ?? (isDate ? value.slice(0, 7) : today.slice(0, 7))
+  const viewedParam = month.value
+  const viewed = isValidMonth(viewedParam)
+    ? viewedParam
+    : isDate
+      ? value.slice(0, 7)
+      : today.slice(0, 7)
   const firstOfMonth = new Date(`${viewed}-01T00:00:00Z`)
   const daysInMonth = new Date(Date.UTC(firstOfMonth.getUTCFullYear(), firstOfMonth.getUTCMonth() + 1, 0)).getUTCDate()
   const leading = firstOfMonth.getUTCDay()

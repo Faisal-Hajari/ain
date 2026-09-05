@@ -59,6 +59,10 @@ fail the whole response.
 - `204 No Content` is accepted for `DELETE`.
 - An error body is not parsed; the status code is what matters. Return a JSON
   body anyway for logs and debugging.
+- A payload that parses but is malformed — a `heatmap` whose rows do not match
+  its labels, a `table` with no columns — is caught by a per-card error boundary
+  and degrades that card alone. Do not rely on this; it is a backstop, not a
+  contract.
 
 ### Timeouts and polling
 
@@ -72,6 +76,9 @@ The frontend polls per element according to its `updates` cadence:
 | `hourly` | 5min | Rolled up hourly |
 | `daily` | 15min | Rolled up daily |
 | `static` | never | Fetched once (reference data) |
+
+This table is pinned by a test (`src/api/queries.test.ts`), so the intervals here
+and the intervals the app actually uses cannot drift apart silently.
 
 Element responses must be cheap enough to serve at these rates for every card on
 a tab at once. If a KPI cannot sustain 15s, give it a slower cadence rather than
@@ -371,8 +378,17 @@ same ids, and the last point should match the headline values.
 ### `gauge` — a value in a range
 
 ```jsonc
-{ "value": 78, "min": 0, "max": 100, "unit": "%", "valueLabel": "78%", "severity": "warn" }
+{
+  "value": 78, "min": 0, "max": 100, "unit": "%",
+  "valueLabel": "78%",                 // pre-formatted, the big number
+  "minLabel": "0%", "maxLabel": "100%",// pre-formatted range ends, both or neither
+  "severity": "warn"
+}
 ```
+
+`value`, `min` and `max` are numbers because the arc maths runs on them.
+`valueLabel`, `minLabel` and `maxLabel` are what gets printed — the frontend does
+not format them, so an unlabelled range simply isn't drawn.
 
 ### `donut` — parts of a whole
 

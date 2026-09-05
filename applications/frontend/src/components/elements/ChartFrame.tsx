@@ -6,10 +6,12 @@ export type ElementSize = 'card' | 'expanded'
 
 /** Every chart gets the same box, so cards line up on the grid. */
 export function ChartFrame({ height = 220, children }: { height?: number; children: ReactElement }) {
-  // min-height, not height: `flex-1` zeroes a flex child's basis, so a card
-  // alone in its grid row would otherwise collapse the chart to nothing.
+  // One definite height, and no flex sizing. ResponsiveContainer measures
+  // itself against the parent, and a percentage height only resolves when an
+  // ancestor has a definite one - which is not true inside the pop-out dialog.
+  // `shrink-0` keeps a constrained flex row from squeezing it back to nothing.
   return (
-    <div className="w-full flex-1" style={{ minHeight: height, height }}>
+    <div className="w-full shrink-0" style={{ height }}>
       <ResponsiveContainer width="100%" height="100%">
         {children}
       </ResponsiveContainer>

@@ -4,6 +4,7 @@ import type { ElementDef } from '@/api/types'
 import { ElementBody } from '@/components/elements/ElementBody'
 import { Chip } from '@/components/ui/Chip'
 import { Dialog } from '@/components/ui/Dialog'
+import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { ErrorState } from '@/components/ui/StateBlocks'
 import { useLocale } from '@/i18n/LocaleProvider'
@@ -42,7 +43,12 @@ export function ExpandedElementDialog({
           ) : query.isError ? (
             <ErrorState message={t.loadFailed} retryLabel={t.retry} onRetry={() => void query.refetch()} />
           ) : (
-            <ElementBody payload={query.data} size="expanded" />
+            <ErrorBoundary
+              resetKey={query.dataUpdatedAt.toString()}
+              fallback={() => <ErrorState message={t.cardCrashed} retryLabel={t.retry} onRetry={() => void query.refetch()} />}
+            >
+              <ElementBody payload={query.data} size="expanded" />
+            </ErrorBoundary>
           )}
         </div>
       </div>

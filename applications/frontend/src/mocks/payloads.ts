@@ -272,6 +272,8 @@ export function buildElementResponse(id: string, seedKey: string, locale: Locale
           max: 100,
           unit: '%',
           valueLabel: `${value}%`,
+          minLabel: '0%',
+          maxLabel: '100%',
           severity: value > 90 ? 'critical' : value > 75 ? 'warn' : 'ok',
         },
       }

@@ -1,6 +1,9 @@
 import type { TablePayload } from '@/api/types'
 
 export function TableView({ data }: { data: TablePayload }) {
+  const first = data.columns[0]
+  if (!first) return null
+
   return (
     <div className="-mx-1 flex-1 overflow-x-auto">
       <table className="w-full border-collapse text-sm">
@@ -21,7 +24,7 @@ export function TableView({ data }: { data: TablePayload }) {
         </thead>
         <tbody>
           {data.rows.map((row, index) => (
-            <tr key={String(row[data.columns[0]!.key] ?? index)} className="border-b border-border/60 last:border-0">
+            <tr key={String(row[first.key] ?? index)} className="border-b border-border/60 last:border-0">
               {data.columns.map((column) => (
                 <td
                   key={column.key}

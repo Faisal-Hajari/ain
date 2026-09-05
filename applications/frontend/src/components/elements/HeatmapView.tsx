@@ -3,7 +3,10 @@ import type { HeatmapPayload } from '@/api/types'
 /** CSS grid beats a chart library for a fixed-size matrix of cells. */
 export function HeatmapView({ data }: { data: HeatmapPayload }) {
   const values = data.cells.flat().filter((value): value is number => value !== null)
-  const max = values.length ? Math.max(...values) : 1
+  // Floor at 1: an all-zero matrix would otherwise divide by zero, and NaN
+  // opacity is dropped by the browser - painting "no incidents" at full
+  // strength, which is exactly backwards.
+  const max = Math.max(1, ...values)
 
   return (
     <div className="flex-1 overflow-x-auto">

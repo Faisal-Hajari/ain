@@ -30,11 +30,11 @@ export function GaugeView({ data }: { data: GaugePayload }) {
       <div className={`-mt-4 text-3xl font-semibold tabular-nums ${severityText[data.severity ?? 'ok']}`}>
         {data.valueLabel}
       </div>
-      <div className="mt-1 text-xs text-muted">
-        {data.min}
-        {data.unit} – {data.max}
-        {data.unit}
-      </div>
+      {data.minLabel && data.maxLabel ? (
+        <div className="mt-1 text-xs text-muted">
+          {data.minLabel} – {data.maxLabel}
+        </div>
+      ) : null}
     </div>
   )
 }

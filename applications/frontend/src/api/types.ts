@@ -156,6 +156,9 @@ export interface GaugePayload {
   max: number
   unit?: string
   valueLabel: string
+  /** Pre-formatted range ends, e.g. "0%" and "100%". Shown only if both are set. */
+  minLabel?: string
+  maxLabel?: string
   severity?: Severity
 }
 

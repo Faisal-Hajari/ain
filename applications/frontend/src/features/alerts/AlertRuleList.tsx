@@ -4,6 +4,7 @@ import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { Chip } from '@/components/ui/Chip'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { ErrorState } from '@/components/ui/StateBlocks'
+import { useUrlParam } from '@/features/filters/useFilters'
 import { useLocale } from '@/i18n/LocaleProvider'
 
 /** The rules the backend holds. Deleting one re-reads the list, never a local copy. */
@@ -11,6 +12,8 @@ export function AlertRuleList({ filters }: { filters: QueryParams }) {
   const { t } = useLocale()
   const rules = useAlertRules(filters)
   const remove = useDeleteAlertRule(filters)
+  // Deleting is irreversible and one click from a hover, so it asks first.
+  const pending = useUrlParam('confirmDelete')
 
   return (
     <Card>
@@ -32,14 +35,37 @@ export function AlertRuleList({ filters }: { filters: QueryParams }) {
                 <span className="text-sm font-medium">{rule.monitorLabel}</span>
                 <Chip severity="warn">{rule.summary}</Chip>
                 <span className="text-[11px] text-muted">{rule.createdLabel}</span>
-                <button
-                  type="button"
-                  onClick={() => remove.mutate(rule.id)}
-                  disabled={remove.isPending}
-                  className="ms-auto rounded-md px-2 py-1 text-xs font-medium text-critical ring-1 ring-border hover:bg-surface disabled:opacity-50"
-                >
-                  {t.deleteRule}
-                </button>
+                {pending.value === rule.id ? (
+                  <span className="ms-auto flex items-center gap-2">
+                    <span className="text-xs text-muted">{t.confirmDelete}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        pending.set(null)
+                        remove.mutate(rule.id)
+                      }}
+                      disabled={remove.isPending}
+                      className="rounded-md px-2 py-1 text-xs font-medium text-critical ring-1 ring-critical/40 hover:bg-critical/10 disabled:opacity-50"
+                    >
+                      {t.confirm}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => pending.set(null)}
+                      className="rounded-md px-2 py-1 text-xs font-medium text-muted ring-1 ring-border hover:bg-surface"
+                    >
+                      {t.cancel}
+                    </button>
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => pending.set(rule.id)}
+                    className="ms-auto rounded-md px-2 py-1 text-xs font-medium text-critical ring-1 ring-border hover:bg-surface"
+                  >
+                    {t.deleteRule}
+                  </button>
+                )}
               </li>
             ))}
           </ul>

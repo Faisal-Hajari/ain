@@ -4,6 +4,7 @@ import { useElementData } from '@/api/queries'
 import type { ElementDef } from '@/api/types'
 import { Card, CardBody, CardFooter, CardHeader } from '@/components/ui/Card'
 import { Chip, LiveDot } from '@/components/ui/Chip'
+import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { ErrorState } from '@/components/ui/StateBlocks'
 import { ExpandedElementDialog } from '@/features/expand/ExpandedElementDialog'
@@ -33,7 +34,7 @@ export function ElementCard({ element, filters }: { element: ElementDef; filters
 
   const logOpen = openLog.value === element.id
   const expandedOpen = openExpanded.value === element.id
-  const expand = () => openExpanded.set(element.id)
+  const expand = openExpanded.set
 
   // Bound on the element rather than in JSX: the card must stay a plain region
   // for assistive tech - the header's expand button is the accessible path -
@@ -47,15 +48,18 @@ export function ElementCard({ element, filters }: { element: ElementDef; filters
       const target = event.target as HTMLElement | null
       // Let the footer's own controls, links and any open dialog win.
       if (target?.closest('button, a, dialog, select, input, label')) return
-      expand()
+      expand(element.id)
     }
 
     card.addEventListener('click', zoom)
     return () => card.removeEventListener('click', zoom)
-  })
+  }, [element.id, expand])
+
+  // span is backend JSON, so an out-of-range value has to land somewhere.
+  const span = SPAN_CLASS[element.span ?? 1] ?? SPAN_CLASS[1]
 
   return (
-    <Card ref={cardRef} className={`${SPAN_CLASS[element.span ?? 1]} cursor-zoom-in`} interactive>
+    <Card ref={cardRef} className={`${span} cursor-zoom-in`} interactive>
       <CardHeader
         title={element.title}
         description={element.description}
@@ -65,7 +69,7 @@ export function ElementCard({ element, filters }: { element: ElementDef; filters
             <Chip severity={element.kind === 'alert' ? 'warn' : undefined}>{kindLabel(t, element.kind)}</Chip>
             <button
               type="button"
-              onClick={expand}
+              onClick={() => expand(element.id)}
               aria-label={`${t.expand}: ${element.title}`}
               className="rounded-md px-1.5 py-0.5 text-xs text-muted ring-1 ring-border hover:bg-canvas"
             >
@@ -80,7 +84,12 @@ export function ElementCard({ element, filters }: { element: ElementDef; filters
         ) : query.isError ? (
           <ErrorState message={t.loadFailed} retryLabel={t.retry} onRetry={() => void query.refetch()} />
         ) : (
-          <ElementBody payload={query.data} />
+          <ErrorBoundary
+            resetKey={query.dataUpdatedAt.toString()}
+            fallback={() => <ErrorState message={t.cardCrashed} retryLabel={t.retry} onRetry={() => void query.refetch()} />}
+          >
+            <ElementBody payload={query.data} />
+          </ErrorBoundary>
         )}
       </CardBody>
 
