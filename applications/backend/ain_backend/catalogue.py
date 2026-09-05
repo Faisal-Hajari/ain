@@ -146,17 +146,6 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		value_min=4, value_max=140,
 	),
 	ElementSpec(
-		id='footfall-heatmap',
-		title=i18n.Text('Footfall by hour', 'حركة الدخول حسب الساعة'),
-		description=i18n.Text(
-			'Entries per hour across the week.',
-			'عدد الداخلين لكل ساعة على مدار الأسبوع.',
-		),
-		type=_Type.HEATMAP, kind=_Kind.MONITOR, updates=_Cadence.HOURLY,
-		span=4, cameras=('03',), unit=i18n.PEOPLE,
-		value_min=0, value_max=60,
-	),
-	ElementSpec(
 		id='queue-length',
 		title=i18n.Text('Queue length', 'طول الطابور'),
 		description=i18n.Text(
@@ -181,42 +170,6 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		value_min=1, value_max=14,
 	),
 	ElementSpec(
-		id='counter-service-time',
-		title=i18n.Text('Counter service time', 'زمن الخدمة عند الكاونتر'),
-		description=i18n.Text(
-			'Duration per transaction at the register.',
-			'مدة كل عملية عند الصندوق.',
-		),
-		type=_Type.KPI, kind=_Kind.MONITOR, updates=_Cadence.EVENT,
-		cameras=('03', '11'),
-		value_format=_ValueFormat.DURATION,
-		value_min=1, value_max=6,
-	),
-	ElementSpec(
-		id='table-reset-time',
-		title=i18n.Text('Table reset time', 'زمن تجهيز الطاولة'),
-		description=i18n.Text(
-			'Lag between a table being vacated and cleaned.',
-			'الفارق بين مغادرة الطاولة وتنظيفها.',
-		),
-		type=_Type.KPI, kind=_Kind.MONITOR, updates=_Cadence.EVENT,
-		cameras=('03', '04'),
-		value_format=_ValueFormat.DURATION,
-		value_min=2, value_max=18,
-	),
-	ElementSpec(
-		id='table-occupancy-rate',
-		title=i18n.Text('Table occupancy rate', 'نسبة إشغال الطاولات'),
-		description=i18n.Text(
-			'Share of tables seated versus total.',
-			'نسبة الطاولات المشغولة من إجمالي الطاولات.',
-		),
-		type=_Type.GAUGE, kind=_Kind.MONITOR, updates=_Cadence.REALTIME,
-		cameras=('03', '04'),
-		value_format=_ValueFormat.PERCENT, unit=i18n.PERCENT_UNIT,
-		value_min=35, value_max=96,
-	),
-	ElementSpec(
 		id='dwell-time-per-table',
 		title=i18n.Text('Dwell time per table', 'مدة الجلوس لكل طاولة'),
 		description=i18n.Text(
@@ -226,49 +179,6 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		type=_Type.HISTOGRAM, kind=_Kind.MONITOR, updates=_Cadence.VISIT,
 		span=2, cameras=('03', '04'),
 		value_min=4, value_max=90,
-	),
-	ElementSpec(
-		id='party-size',
-		title=i18n.Text('Group / party size', 'حجم المجموعة'),
-		description=i18n.Text(
-			'Distribution of 1s, 2s and 3+.',
-			'توزيع المجموعات: فرد، فردان، ثلاثة فأكثر.',
-		),
-		type=_Type.BAR, kind=_Kind.MONITOR, updates=_Cadence.VISIT,
-		cameras=('03', '04'),
-		value_min=6, value_max=90,
-	),
-	ElementSpec(
-		id='demographics-gender',
-		title=i18n.Text('Demographics', 'التركيبة السكانية'),
-		description=i18n.Text(
-			'Aggregate audience profile.',
-			'الملف التجميعي للزوار.',
-		),
-		type=_Type.DONUT, kind=_Kind.MONITOR, updates=_Cadence.HOURLY,
-		cameras=('03', '04'),
-		value_min=8, value_max=90,
-	),
-	ElementSpec(
-		id='counter-unmanned',
-		title=i18n.Text('Counter unmanned', 'الكاونتر بلا موظف'),
-		description=i18n.Text(
-			'Whether the till is unmanned, and for how long.',
-			'ما إذا كان الصندوق بلا موظف، ومنذ متى.',
-		),
-		type=_Type.ALERT, kind=_Kind.ALERT, updates=_Cadence.REALTIME,
-		cameras=('11',), drilldown='instances',
-	),
-	ElementSpec(
-		id='order-abandonment',
-		title=i18n.Text('Order abandonment', 'التخلي عن الطلب'),
-		description=i18n.Text(
-			'Customers who left the queue before ordering.',
-			'العملاء الذين غادروا الطابور قبل الطلب.',
-		),
-		type=_Type.KPI, kind=_Kind.ALERT, updates=_Cadence.EVENT,
-		cameras=('11',), drilldown='instances', unit=i18n.EVENTS,
-		value_min=0, value_max=12,
 	),
 	ElementSpec(
 		id='congestion-count',
@@ -304,96 +214,6 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		value_min=0, value_max=16,
 	),
 	ElementSpec(
-		id='queue-abandonment-count',
-		title=i18n.Text('Queue-abandonment count', 'عدد حالات ترك الطابور'),
-		description=i18n.Text(
-			'Times a customer left before ordering.',
-			'عدد المرات التي غادر فيها عميل قبل الطلب.',
-		),
-		type=_Type.KPI, kind=_Kind.ALERT, updates=_Cadence.EVENT,
-		cameras=('11',), drilldown='instances', unit=i18n.EVENTS,
-		value_min=0, value_max=10,
-	),
-	ElementSpec(
-		id='register-unattended-count',
-		title=i18n.Text('Register-unattended count', 'عدد حالات ترك الصندوق'),
-		description=i18n.Text(
-			'Times the till was left unmanned past X minutes.',
-			'عدد المرات التي تُرك فيها الصندوق بلا موظف أكثر من X دقيقة.',
-		),
-		type=_Type.KPI, kind=_Kind.ALERT, updates=_Cadence.EVENT,
-		cameras=('11',), drilldown='instances', unit=i18n.EVENTS,
-		value_min=0, value_max=8,
-	),
-	ElementSpec(
-		id='uncleaned-table-count',
-		title=i18n.Text('Uncleaned table count', 'عدد الطاولات غير المنظفة'),
-		description=i18n.Text(
-			'Times a table stayed uncleaned for more than X minutes.',
-			'عدد المرات التي بقيت فيها طاولة دون تنظيف أكثر من X دقيقة.',
-		),
-		type=_Type.KPI, kind=_Kind.ALERT, updates=_Cadence.EVENT,
-		cameras=('03', '04'), drilldown='instances', unit=i18n.EVENTS,
-		value_min=0, value_max=12,
-	),
-	ElementSpec(
-		id='attendance-summary',
-		title=i18n.Text('Attendance', 'الحضور'),
-		description=i18n.Text(
-			'Rostered staff against who is on-site right now.',
-			'الموظفون المجدولون مقابل الموجودين حالياً.',
-		),
-		type=_Type.STAT_GROUP, kind=_Kind.MONITOR,
-		updates=_Cadence.REALTIME, span=2, cameras=('03', '11'),
-		value_min=4, value_max=12,
-	),
-	ElementSpec(
-		id='hours-worked',
-		title=i18n.Text('Hours worked', 'ساعات العمل'),
-		description=i18n.Text(
-			'First-seen to last-seen duration per staff member.',
-			'المدة من أول ظهور إلى آخر ظهور لكل موظف.',
-		),
-		type=_Type.TABLE, kind=_Kind.MONITOR, updates=_Cadence.DAILY,
-		span=2, cameras=('03', '11', '05'),
-		value_format=_ValueFormat.HOURS,
-		value_min=360, value_max=560,
-	),
-	ElementSpec(
-		id='throughput-per-employee',
-		title=i18n.Text('Throughput per employee', 'الإنتاجية لكل موظف'),
-		description=i18n.Text(
-			'Orders handled per staff member.',
-			'عدد الطلبات التي أنجزها كل موظف.',
-		),
-		type=_Type.BAR, kind=_Kind.MONITOR, updates=_Cadence.HOURLY,
-		span=2, cameras=('05', '11'), unit=i18n.ORDERS,
-		value_min=5, value_max=80,
-	),
-	ElementSpec(
-		id='uniform-ppe-adherence',
-		title=i18n.Text('Uniform / PPE adherence', 'الالتزام بالزي والوقاية'),
-		description=i18n.Text(
-			'Per-employee dress and PPE compliance.',
-			'التزام كل موظف بالزي ومعدات الوقاية.',
-		),
-		type=_Type.GAUGE, kind=_Kind.MONITOR, updates=_Cadence.REALTIME,
-		cameras=('05',),
-		value_format=_ValueFormat.PERCENT, unit=i18n.PERCENT_UNIT,
-		value_min=62, value_max=99,
-	),
-	ElementSpec(
-		id='hygiene-violations-by-day',
-		title=i18n.Text('Hygiene violations', 'مخالفات النظافة'),
-		description=i18n.Text(
-			'Gloves, hair cover and mask violations per day.',
-			'مخالفات القفازات وتغطية الشعر والكمامة يومياً.',
-		),
-		type=_Type.STACKED_BAR, kind=_Kind.MONITOR,
-		updates=_Cadence.DAILY, span=2, cameras=('05',),
-		unit=i18n.EVENTS, value_min=0, value_max=9,
-	),
-	ElementSpec(
 		id='no-gloves-count',
 		title=i18n.Text('No-gloves count', 'عدد حالات عدم ارتداء القفازات'),
 		description=i18n.Text(
@@ -427,28 +247,6 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		value_min=0, value_max=16,
 	),
 	ElementSpec(
-		id='phone-use-count',
-		title=i18n.Text('Phone-use count', 'عدد حالات استخدام الهاتف'),
-		description=i18n.Text(
-			'Times a staff member used a personal phone on duty.',
-			'عدد المرات التي استخدم فيها موظف هاتفه أثناء العمل.',
-		),
-		type=_Type.KPI, kind=_Kind.ALERT, updates=_Cadence.EVENT,
-		cameras=('05', '11', '12'), drilldown='instances',
-		unit=i18n.EVENTS, value_min=0, value_max=18,
-	),
-	ElementSpec(
-		id='smoking-vaping-count',
-		title=i18n.Text('Smoking / vaping count', 'عدد حالات التدخين'),
-		description=i18n.Text(
-			'Times a staff member was seen smoking on premises.',
-			'عدد المرات التي شوهد فيها موظف يدخن داخل الموقع.',
-		),
-		type=_Type.KPI, kind=_Kind.ALERT, updates=_Cadence.EVENT,
-		cameras=('05', '13', '15'), drilldown='instances',
-		unit=i18n.EVENTS, value_min=0, value_max=6,
-	),
-	ElementSpec(
 		id='camera-status',
 		title=i18n.Text('Feed health', 'حالة البث'),
 		description=i18n.Text(
@@ -467,16 +265,6 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		),
 		type=_Type.CAMERA_GRID, kind=_Kind.MONITOR,
 		updates=_Cadence.REALTIME, span=4,
-	),
-	ElementSpec(
-		id='camera-coverage',
-		title=i18n.Text('Camera coverage', 'تغطية الكاميرات'),
-		description=i18n.Text(
-			'Camera layout as installed at the branch.',
-			'توزيع الكاميرات كما هي مركّبة في الفرع.',
-		),
-		type=_Type.TABLE, kind=_Kind.MONITOR, updates=_Cadence.STATIC,
-		span=2,
 	),
 )
 
@@ -513,33 +301,12 @@ SECTIONS: tuple[SectionSpec, ...] = (
 		element_ids=(
 			'live-occupancy',
 			'footfall',
-			'table-occupancy-rate',
-			'dwell-time-per-table',
-			'party-size',
-			'demographics-gender',
-			'footfall-heatmap',
-			'congestion-count',
-			'empty-restaurant-count',
-		),
-	),
-	SectionSpec(
-		id='service',
-		title=i18n.Text('Service & queue', 'الخدمة والطابور'),
-		description=i18n.Text(
-			'How long guests wait, and how fast the counter clears them.',
-			'مدة انتظار الضيوف وسرعة إنجاز الكاونتر.',
-		),
-		element_ids=(
 			'queue-length',
 			'queue-wait-time',
-			'counter-service-time',
-			'table-reset-time',
-			'counter-unmanned',
-			'order-abandonment',
+			'dwell-time-per-table',
+			'congestion-count',
+			'empty-restaurant-count',
 			'long-wait-count',
-			'queue-abandonment-count',
-			'register-unattended-count',
-			'uncleaned-table-count',
 		),
 	),
 	SectionSpec(
@@ -549,16 +316,9 @@ SECTIONS: tuple[SectionSpec, ...] = (
 			'Information about the employees.', 'معلومات عن الموظفين.'
 		),
 		element_ids=(
-			'attendance-summary',
-			'uniform-ppe-adherence',
-			'throughput-per-employee',
-			'hours-worked',
-			'hygiene-violations-by-day',
 			'no-gloves-count',
 			'no-hair-cover-count',
 			'no-mask-count',
-			'phone-use-count',
-			'smoking-vaping-count',
 		),
 	),
 	SectionSpec(
@@ -567,7 +327,7 @@ SECTIONS: tuple[SectionSpec, ...] = (
 		description=i18n.Text(
 			'Cameras and camera feeds.', 'الكاميرات وبثّها المباشر.'
 		),
-		element_ids=('camera-status', 'camera-feeds', 'camera-coverage'),
+		element_ids=('camera-status', 'camera-feeds'),
 	),
 	SectionSpec(
 		id='alerts',

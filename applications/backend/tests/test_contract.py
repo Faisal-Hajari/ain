@@ -11,6 +11,7 @@ from ain_backend import alerts
 from ain_backend import catalogue
 from ain_backend import main
 from ain_backend import models
+from ain_backend import payloads
 
 FILTERS = {'branch': 'olaya', 'venue': 'cafe', 'range': 'today'}
 
@@ -195,9 +196,27 @@ _ASSERTIONS = {
 }
 
 
-def test_every_element_type_in_the_contract_is_exercised(client):
+def test_every_served_element_type_is_in_the_contract(client):
+	"""The catalogue is a subset of the contract, not a tour of it.
+
+	The dashboard is scoped to a fixed set of cards, so most element types have
+	no card today. What must hold is that nothing is served which the frontend
+	cannot render, and that anything served is covered by an assertion here.
+	"""
 	served = {element['type'] for element in element_defs(client)}
-	assert served == {member.value for member in models.ElementType}
+	assert served <= {member.value for member in models.ElementType}
+	assert served <= set(_ASSERTIONS)
+
+
+def test_every_element_type_in_the_contract_has_a_builder():
+	"""The reference implementation stays complete even where unused.
+
+	Adding a card of an existing type should be a catalogue edit alone, so a
+	type losing its last card must not quietly lose the ability to be served.
+	Reaching into the private map is deliberate: there is no configured element
+	to reach these builders through.
+	"""
+	assert set(payloads._BUILDERS) == set(models.ElementType)
 
 
 @pytest.mark.parametrize('element', catalogue.ELEMENTS, ids=lambda e: e.id)
