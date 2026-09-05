@@ -47,15 +47,14 @@ class CameraSpec:
 		"""Where a browser plays this camera.
 
 		Returns:
-			The camera's page on the stream server, which serves HLS the
-			browser can play. The dashboard's own origin proxies this
-			path straight through - nginx in the frontend image, the
-			dev-server proxy under vite - so the tile plays a
+			The camera's HLS playlist. The dashboard's own origin
+			proxies this path straight through - nginx in the frontend
+			image, the dev-server proxy under vite - so the tile plays a
 			same-origin URL and no hostname is baked into a payload.
 			The path is the id without its leading zero, which is what
 			the recordings are named.
 		"""
-		return f'/cam{int(self.id)}/'
+		return f'/cam{int(self.id)}/index.m3u8'
 
 
 @dataclasses.dataclass(frozen=True)

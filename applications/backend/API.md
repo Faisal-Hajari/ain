@@ -117,15 +117,16 @@ exactly the types the config declares - no more.
 
 ### Camera streams
 
-A `camera-grid` feed carries everything a tile needs to play: `streamUrl` is a
-page the frontend drops into an iframe, and it is **absent when the feed is
-down** - that absence is what decides between a player and a placeholder, so do
-not send a URL for a camera that cannot serve one.
+A `camera-grid` feed carries everything a tile needs to play: `streamUrl` is an
+**HLS playlist**, and it is **absent when the feed is down** - that absence is
+what decides between a player and a placeholder, so do not send a URL for a
+camera that cannot serve one.
 
-The reference stack points `streamUrl` at `/camNN/`, MediaMTX's own HLS page,
-proxied onto the dashboard's origin so the tile is same-origin and no hostname
-is baked into a payload. Any other player page works the same way; a bare
-`.m3u8` would not, since nothing in the frontend decodes HLS.
+The reference stack points `streamUrl` at `/camNN/index.m3u8`, MediaMTX's
+playlist, proxied onto the dashboard's origin so the tile is same-origin and no
+hostname is baked into a payload. The frontend plays it in a `<video>` it owns,
+so the URL has to be a playlist: a player page would render as a broken video,
+and a format other than HLS will not play at all.
 
 Counts have to agree: the `camera-status` stats, the `camera-downtime` series
 and the grid's own `status` values are three views of one truth, and a user

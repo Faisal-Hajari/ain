@@ -309,7 +309,7 @@ def test_an_online_feed_carries_the_stream_the_browser_plays(client):
 	assert online
 	for feed in online:
 		assert feed['streamUrl'].startswith('/cam')
-		assert feed['streamUrl'].endswith('/')
+		assert feed['streamUrl'].endswith('.m3u8')
 
 
 def test_every_camera_has_a_recording_behind_it(client):
