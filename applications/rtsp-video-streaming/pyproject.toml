@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rtsp-video-streaming"
+version = "0.1.0"
+description = "Stream a folder of video files over RTSP, looping forever"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+rtsp-video-streaming = "rtsp_video_streaming.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-asyncio>=0.21"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
