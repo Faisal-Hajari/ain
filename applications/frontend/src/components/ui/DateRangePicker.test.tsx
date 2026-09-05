@@ -12,7 +12,7 @@ const OPTIONS: FilterOption[] = [
 
 const LABELS = { from: 'From', previousMonth: 'Previous month', nextMonth: 'Next month', chooseStartDate: 'Or pick a start date' }
 
-function setup(value: string, entry = '/') {
+function setup(value: string, entry = '/', today = '2026-09-05') {
   return render(
     <MemoryRouter initialEntries={[entry]}>
       <DateRangePicker
@@ -20,7 +20,7 @@ function setup(value: string, entry = '/') {
         label="Date range"
         value={value}
         options={OPTIONS}
-        today="2026-09-05"
+        today={today}
         locale="en"
         labels={LABELS}
       />
@@ -62,6 +62,28 @@ describe('DateRangePicker with untrusted URL input', () => {
   it('ignores an out-of-range month number', () => {
     expect(() => setup('today', '/?calendar=open&calendarMonth=2026-13')).not.toThrow()
     expect(screen.getByText('September 2026')).toBeTruthy()
+  })
+
+  /**
+   * `today` is backend JSON, and it reaches a formatter through the month grid.
+   * FilterBar sits above every card-level boundary, so a throw here takes the
+   * page down rather than one card.
+   */
+  it('withholds the calendar rather than throwing on a malformed today', () => {
+    expect(() => setup('today', '/?calendar=open', '05/09/2026')).not.toThrow()
+    expect(screen.queryByText('Or pick a start date')).toBeNull()
+    // The presets still work without a trustworthy today.
+    expect(screen.getByRole('button', { name: 'Last 7 days' })).toBeInTheDocument()
+  })
+
+  it('withholds the calendar when today is a real-looking but impossible date', () => {
+    expect(() => setup('today', '/?calendar=open', '2026-02-31')).not.toThrow()
+    expect(screen.queryByText('Or pick a start date')).toBeNull()
+  })
+
+  it('shows the calendar when today is valid', () => {
+    setup('today', '/?calendar=open')
+    expect(screen.getByText('Or pick a start date')).toBeInTheDocument()
   })
 
   it('disables days after today', () => {

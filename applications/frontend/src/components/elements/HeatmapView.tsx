@@ -2,7 +2,12 @@ import type { HeatmapPayload } from '@/api/types'
 
 /** CSS grid beats a chart library for a fixed-size matrix of cells. */
 export function HeatmapView({ data }: { data: HeatmapPayload }) {
-  const values = data.cells.flat().filter((value): value is number => value !== null)
+  // Scale to the cells the labels address, not to everything the payload
+  // carries: a matrix wider than xLabels would otherwise inflate max and wash
+  // out every cell that is actually drawn.
+  const values = data.yLabels
+    .flatMap((_, y) => data.xLabels.map((__, x) => data.cells[y]?.[x] ?? null))
+    .filter((value): value is number => value !== null)
   // Floor at 1: an all-zero matrix would otherwise divide by zero, and NaN
   // opacity is dropped by the browser - painting "no incidents" at full
   // strength, which is exactly backwards.
@@ -22,13 +27,13 @@ export function HeatmapView({ data }: { data: HeatmapPayload }) {
             </div>
           ))}
           {data.yLabels.map((rowLabel, y) => (
-            <div key={rowLabel} className="contents">
+            <div key={`row-${y}`} className="contents">
               <div className="pe-2 text-end text-[11px] text-muted">{rowLabel}</div>
               {data.xLabels.map((colLabel, x) => {
                 const value = data.cells[y]?.[x] ?? null
                 return (
                   <div
-                    key={colLabel}
+                    key={`cell-${y}-${x}`}
                     title={`${rowLabel} ${colLabel}: ${value ?? '-'} ${data.unit ?? ''}`}
                     className="h-7 rounded-[4px]"
                     style={{

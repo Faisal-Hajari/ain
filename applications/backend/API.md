@@ -1,6 +1,6 @@
 # Backend requirements — AIN dashboard API
 
-What `applications/frontend` needs in order to render. The frontend is a
+What `applications/frontend` needs to render. The frontend is a
 renderer with no domain knowledge: it can draw a line chart or a KPI card, but
 it does not know what "footfall" means, how a percentage is computed, or which
 direction is good news. **Everything in this document is the backend's job.**
@@ -112,7 +112,7 @@ The whole navigation and layout. Called once per language, cached 5 minutes.
 
 ```jsonc
 {
-  "branchLabel": "Riyadh - Olaya",   // localised, shown under the app name
+  "branchLabel": "Riyadh - Olaya",   // localized, shown under the app name
   "today": "2026-09-05",             // ISO date, the backend's today
   "filters": [ /* FilterDef[] */ ],
   "sections": [ /* SectionDef[] */ ]
@@ -128,7 +128,7 @@ timezone authoritative rather than the viewer's.
 ```jsonc
 {
   "id": "range",                     // the URL search-param key this filter owns
-  "label": "Date range",             // localised
+  "label": "Date range",             // localized
   "control": "date-range",           // "select" (default) | "date-range"
   "defaultValue": "today",
   "options": [ { "value": "7d", "label": "Last 7 days" } ]
@@ -196,7 +196,7 @@ The payload for one card, already shaped for its `type`.
 
 ### 4.3 `GET /api/elements/:id/instances?<filters>`
 
-The drilldown behind any element with `drilldown: "instances"` — the catalogue's
+The drilldown behind any element with `drilldown: "instances"` — the catalog's
 "click a card, get the occurrences and their clips".
 
 ```jsonc
@@ -208,7 +208,7 @@ The drilldown behind any element with `drilldown: "instances"` — the catalogue
     {
       "id": "congestion-count-0",
       "timestamp": "20:18",          // PRE-FORMATTED for display, branch-local
-      "camera": "Camera 11",         // localised label, not a bare id
+      "camera": "Camera 11",         // localized label, not a bare id
       "detail": "Occupancy passed 90% with a growing queue.",
       "severity": "critical",
       "clipUrl": "/api/clips/congestion-count/0.mp4",
@@ -261,20 +261,20 @@ seconds — your choice, but be consistent with what the rule stores).
     {
       "id": "b1f2…",
       "monitorId": "live-occupancy",
-      "monitorLabel": "Live occupancy",   // localised at read time
+      "monitorLabel": "Live occupancy",   // localized at read time
       "comparator": "above",
       "threshold": 46,
       "unit": "people",
-      "summary": "Above 46",              // PRE-FORMATTED sentence, localised
-      "createdLabel": "Created today"     // PRE-FORMATTED, localised
+      "summary": "Above 46",              // PRE-FORMATTED sentence, localized
+      "createdLabel": "Created today"     // PRE-FORMATTED, localized
     }
   ]
 }
 ```
 
-**Rules must be stored language-neutrally and localised on read.** A rule
+**Rules must be stored language-neutrally and localized on read.** A rule
 created in Arabic and read in English must come back in English — the frontend
-verifies nothing and simply prints `monitorLabel`, `summary` and `createdLabel`.
+verifies nothing and prints `monitorLabel`, `summary` and `createdLabel`.
 
 ### 4.6 `POST /api/alerts/rules?<filters>`
 
@@ -300,7 +300,7 @@ threshold with a 4xx. The form only enforces "a number, ≥ 0".
 Referenced from payloads, fetched directly by the browser:
 
 - `streamUrl` on a camera feed — a live stream for the tile. HLS (`.m3u8`) is
-  assumed; **no player is wired up yet** (§9).
+  assumed; **no player is wired up** (§9).
 - `thumbnailUrl` on a camera feed or instance — a still image. When absent the
   tile draws a placeholder.
 - `clipUrl` on an instance — the recorded clip for that occurrence.
@@ -369,7 +369,7 @@ same ids, and the last point should match the headline values.
 
 - Each `points[]` entry has `x` plus one key per series id.
 - **`xLabel` and `yLabel` are required in practice.** Every chart draws both
-  axes with titles; omitting them leaves an axis unlabelled.
+  axes with titles; omitting them leaves an axis unlabeled.
 - `stacked-bar` stacks all series; the others draw them side by side. A legend
   appears automatically when there is more than one series.
 - `x` values are display strings the backend chooses: `"08:00"`, `"Mon"`,
@@ -388,7 +388,7 @@ same ids, and the last point should match the headline values.
 
 `value`, `min` and `max` are numbers because the arc maths runs on them.
 `valueLabel`, `minLabel` and `maxLabel` are what gets printed — the frontend does
-not format them, so an unlabelled range simply isn't drawn.
+not format them, so an unlabeled range isn't drawn.
 
 ### `donut` — parts of a whole
 
@@ -444,10 +444,10 @@ tabular-numbers a column. Missing keys render as `-`.
   "feeds": [
     {
       "id": "03",
-      "label": "Camera 03",          // localised
+      "label": "Camera 03",          // localized
       "zone": "Indoor entrance and lobby / waiting area.",
       "status": "online",            // "online" | "offline"
-      "statusLabel": "Online",       // localised
+      "statusLabel": "Online",       // localized
       "streamUrl": "/api/cameras/03/stream.m3u8",
       "thumbnailUrl": null
     }
@@ -459,10 +459,10 @@ tabular-numbers a column. Missing keys render as `-`.
 
 ---
 
-## 6. Localisation
+## 6. Localization
 
 `lang` is sent on **every** request, including element payloads and the alert
-endpoints. The response must be fully localised:
+endpoints. The response must be fully localized:
 
 - section and element titles and descriptions
 - stat labels, series labels, axis titles, table headers, slice labels
@@ -471,7 +471,7 @@ endpoints. The response must be fully localised:
 - camera labels, status words, alert headlines, `summary`, `createdLabel`
 
 Arabic renders right-to-left; the frontend sets `dir="rtl"` on the document. No
-special response handling is needed for direction — just send Arabic text.
+special response handling is needed for direction — send Arabic text.
 
 **Switching language must not change the numbers.** The user sees titles
 re-render while values stay put. If your generator seeds on the request, exclude
@@ -503,7 +503,7 @@ re-render while values stay put. If your generator seeds on the request, exclude
 
 | File | What it shows |
 | --- | --- |
-| `config.ts` | A full `DashboardConfig` — five sections, the element registry, localised filters |
+| `config.ts` | A full `DashboardConfig` — five sections, the element registry, localized filters |
 | `payloads.ts` | A valid payload for **every** element type, in both languages |
 | `alerts.ts` | The monitors, rules store, and the language-neutral-storage rule from §4.5 |
 | `index.ts` | The routing table — every path and method the frontend calls |
@@ -511,15 +511,15 @@ re-render while values stay put. If your generator seeds on the request, exclude
 Running the frontend against it is the fastest way to see the expected shapes:
 
 ```bash
-cd applications/frontend && npm install && VITE_API_MOCK=true npm run dev
+cd applications/frontend && npm ci && VITE_API_MOCK=true npm run dev
 ```
 
 ---
 
 ## 9. Open questions
 
-These need a decision before the backend is done; the frontend has no position
-on them yet.
+These need a decision before the backend is done. The frontend has no position
+on them.
 
 1. **Authentication.** Nothing is sent today — no header, no cookie handling, no
    401 flow, no login screen. If the API needs auth, that is a frontend change

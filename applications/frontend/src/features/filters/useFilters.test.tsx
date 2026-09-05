@@ -44,11 +44,36 @@ describe('useUrlWriter', () => {
     expect(new URLSearchParams(result.current.search).get('range')).toBe('2026-09-02')
   })
 
-  it('keeps a stable identity across renders, so effects do not re-subscribe', () => {
-    const { result, rerender } = renderHook(() => useUrlWriter(), { wrapper: wrapper('/') })
+  /**
+   * The regression this guards: ElementCard's click-to-zoom listener depends on
+   * the writer, so an identity that changed on every render would re-subscribe
+   * on every render.
+   */
+  it('keeps a stable identity across renders at the same URL', () => {
+    const { result, rerender } = renderHook(() => useUrlWriter(), { wrapper: wrapper('/?range=today') })
     const first = result.current
     rerender()
+    rerender()
     expect(result.current).toBe(first)
+  })
+
+  /**
+   * It does change when the URL changes, and must: react-router rebuilds
+   * setSearchParams per location, so pinning the identity across a navigation
+   * would leave the updater resolving against the previous URL. Effects
+   * re-subscribe once per navigation, which is the intended cost.
+   */
+  it('takes a new identity after a navigation', () => {
+    const { result } = renderHook(
+      () => ({ write: useUrlWriter(), search: useLocation().search }),
+      { wrapper: wrapper('/?range=today') },
+    )
+
+    const before = result.current.write
+    act(() => before({ range: '30d' }))
+
+    expect(result.current.search).toContain('range=30d')
+    expect(result.current.write).not.toBe(before)
   })
 })
 

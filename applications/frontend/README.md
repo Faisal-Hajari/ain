@@ -1,11 +1,11 @@
 # AIN dashboard - frontend
 
-The dashboard front end. No business logic here: just visualization and
-reusable components, in card-style layout.
+The dashboard front end. This app holds no business logic. It renders
+visualizations and reusable components in a card-style layout.
 
 Every view is rendered from what the backend sends. The frontend knows how to
 draw a **line chart** or a **KPI card**; it does not know what "footfall" is.
-Adding, removing or renaming a metric from the KPI catalogue is a backend
+Adding, removing or renaming a metric from the KPI catalog is a backend
 change and needs no code here.
 
 ## Scope
@@ -39,16 +39,17 @@ TanStack Query · React Router · Recharts.
 ## Run it
 
 ```bash
-npm install
+npm ci
 VITE_API_MOCK=true npm run dev
 ```
 
 `VITE_API_MOCK=true` serves every `/api` call from `src/mocks/`, a deterministic
-transcription of the KPI catalogue, so the UI runs with no backend. Drop the
+transcription of the KPI catalog, so the UI runs with no backend. Drop the
 flag (see `.env.example`) and Vite proxies `/api` to `VITE_API_TARGET`.
 
 ```bash
 npm run build       # type-check + production bundle
+npm run test        # vitest
 npm run typecheck
 npm run lint
 ```
@@ -56,7 +57,7 @@ npm run lint
 ## The contract
 
 `src/api/types.ts` is the single source of truth and the spec the backend has to
-meet. Three endpoints:
+meet. Seven endpoints:
 
 | Endpoint | Returns |
 | --- | --- |
@@ -134,7 +135,7 @@ rendering stays pure.
 Language is a preference rather than a filter, so it sits in **Settings** at the
 foot of the nav.
 
-## Localisation
+## Localization
 
 English and Arabic, with `dir="rtl"` applied to the document for Arabic.
 
@@ -145,7 +146,7 @@ rows all come back translated. The dictionary in `src/i18n/` covers UI chrome
 only - about two dozen strings, plus the two fixed enums (severity and
 monitor/alert) that are not backend text.
 
-The mock backend localises the same way the real one must. Its generator seeds
+The mock backend localizes the same way the real one must. Its generator seeds
 on the filters *excluding* `lang`, so switching language re-labels a card
 without moving its numbers.
 

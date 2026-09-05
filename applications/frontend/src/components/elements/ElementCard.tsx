@@ -59,7 +59,7 @@ export function ElementCard({ element, filters }: { element: ElementDef; filters
   const span = SPAN_CLASS[element.span ?? 1] ?? SPAN_CLASS[1]
 
   return (
-    <Card ref={cardRef} className={`${span} cursor-zoom-in`} interactive>
+    <Card ref={cardRef} className={span} interactive>
       <CardHeader
         title={element.title}
         description={element.description}

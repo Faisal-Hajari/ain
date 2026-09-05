@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 /**
  * Loaded per test with the mock transport explicitly off, so the suite does not
@@ -17,10 +17,6 @@ function stubFetch(body: unknown, ok = true, status = 200) {
 }
 
 describe('apiGet', () => {
-  beforeEach(() => {
-    vi.unstubAllEnvs()
-  })
-
   it('drops undefined and empty params and sorts the rest', async () => {
     const { apiGet } = await loadClient()
     const fetchMock = stubFetch({})

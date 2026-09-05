@@ -4,11 +4,6 @@ import type { FilterOption, Locale } from '@/api/types'
 import { useUrlParam, useUrlWriter } from '@/features/filters/useFilters'
 
 /**
- * Presets plus a month calendar. Picking a day sets it as the start date, so
- * the value is either a preset key ("7d") or an ISO date ("2026-08-12").
- * `today` comes from the backend so nothing here reads the browser clock.
- */
-/**
  * `2026-09-02`, and a real day. The round-trip is the point: V8 happily rolls
  * `2026-02-31` over to March 3 rather than returning an invalid Date, so
  * parsing alone would let a nonsense date through.
@@ -24,6 +19,16 @@ function isValidMonth(value: string | null): value is string {
   return value !== null && /^\d{4}-(0[1-9]|1[0-2])$/.test(value)
 }
 
+/**
+ * Presets plus a month calendar. Picking a day sets it as the start date, so
+ * the value is either a preset key ("7d") or an ISO date ("2026-08-12").
+ * `today` comes from the backend so nothing here reads the browser clock.
+ *
+ * This control owns its search param rather than taking an `onChange`, because
+ * choosing a day has to write the filter and close the panel in a single URL
+ * write. A control that only sets one value takes `onChange` and goes through
+ * `useFilters` instead - see `Select`.
+ */
 export function DateRangePicker({
   paramKey,
   label,
@@ -63,6 +68,11 @@ export function DateRangePicker({
       ? `${labels.from} ${dayFormat.format(new Date(value))}`
       : (options[0]?.label ?? '')
 
+  // `today` is backend JSON and reaches a formatter, so it gets the same
+  // treatment as the URL params. Without a trustworthy today there is no month
+  // to open on and no bound on future days, so the calendar half is withheld
+  // rather than guessed at - the presets still work.
+  const hasToday = isValidDay(today)
   const viewedParam = month.value
   const viewed = isValidMonth(viewedParam)
     ? viewedParam
@@ -122,8 +132,9 @@ export function DateRangePicker({
             ))}
           </div>
 
-          <div className="mt-3 border-t border-border pt-3">
-            <p className="mb-2 text-[11px] text-muted">{labels.chooseStartDate}</p>
+          {hasToday ? (
+            <div className="mt-3 border-t border-border pt-3">
+              <p className="mb-2 text-[11px] text-muted">{labels.chooseStartDate}</p>
             <div className="flex items-center justify-between gap-2">
               <button
                 type="button"
@@ -170,8 +181,9 @@ export function DateRangePicker({
                   </button>
                 ),
               )}
+              </div>
             </div>
-          </div>
+          ) : null}
         </div>
       ) : null}
     </div>

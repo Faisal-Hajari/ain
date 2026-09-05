@@ -10,8 +10,11 @@ import type { FilterDef, Locale } from '@/api/types'
  * the current location rather than queueing them like a state setter, so two
  * calls in the same handler would leave only the last one's change.
  *
- * The returned function is stable, so effects that depend on it do not
- * re-subscribe on every render.
+ * The returned function is stable across renders at a given URL, which is what
+ * keeps effects depending on it from re-subscribing on every render. It does
+ * change when the URL changes, and has to: react-router rebuilds
+ * `setSearchParams` per location, and holding a stale one would resolve the
+ * updater against the previous URL - the very bug the patch argument avoids.
  */
 export function useUrlWriter() {
   const [, setSearchParams] = useSearchParams()

@@ -26,6 +26,27 @@ describe('HeatmapView', () => {
     }
   })
 
+  /**
+   * API.md names a heatmap whose rows do not match its labels as a case the
+   * frontend should survive. Scaling to the whole payload rather than to the
+   * addressed cells would wash out everything actually drawn.
+   */
+  it('scales to the cells the labels address, not to extra columns', () => {
+    const { container } = render(
+      <HeatmapView data={{ ...base, cells: [[10, 10, 9999], [10, 10, 9999]] }} />,
+    )
+    const drawn = opacities(container)
+    expect(drawn).toHaveLength(4)
+    for (const opacity of drawn) expect(opacity).toBeCloseTo(1)
+  })
+
+  it('renders a short row as empty cells rather than throwing', () => {
+    const { container } = render(<HeatmapView data={{ ...base, cells: [[5]] }} />)
+    const drawn = opacities(container)
+    expect(drawn).toHaveLength(4)
+    expect(drawn.filter((o) => o === 0.3)).toHaveLength(3)
+  })
+
   it('renders a missing reading as an empty cell', () => {
     const { container } = render(<HeatmapView data={{ ...base, cells: [[null, 10], [5, 10]] }} />)
     expect(opacities(container)[0]).toBeCloseTo(0.3)

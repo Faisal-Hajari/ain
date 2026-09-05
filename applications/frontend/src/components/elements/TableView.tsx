@@ -24,7 +24,7 @@ export function TableView({ data }: { data: TablePayload }) {
         </thead>
         <tbody>
           {data.rows.map((row, index) => (
-            <tr key={String(row[first.key] ?? index)} className="border-b border-border/60 last:border-0">
+            <tr key={`${index}:${String(row[first.key] ?? '')}`} className="border-b border-border/60 last:border-0">
               {data.columns.map((column) => (
                 <td
                   key={column.key}
