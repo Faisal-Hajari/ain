@@ -8,19 +8,7 @@
 
 export type Locale = 'en' | 'ar'
 
-export type ElementType =
-  | 'kpi'
-  | 'stat-group'
-  | 'gauge'
-  | 'line'
-  | 'bar'
-  | 'stacked-bar'
-  | 'donut'
-  | 'histogram'
-  | 'heatmap'
-  | 'alert'
-  | 'table'
-  | 'camera-grid'
+export type ElementType = 'kpi' | 'stat-group' | 'line' | 'histogram' | 'camera-grid'
 
 /**
  * Monitors track a value; alerts count occurrences and open an instance log.
@@ -70,7 +58,7 @@ export interface FilterOption {
 
 /**
  * How a filter is presented. 'date-range' renders the preset buttons plus a
- * calendar whose picked day becomes the start date; its value is either a
+ * date input whose picked day becomes the start date; its value is either a
  * preset key or an ISO date.
  */
 export type FilterControl = 'select' | 'date-range'
@@ -150,46 +138,12 @@ export interface StatGroupPayload {
   trend?: TrendPayload
 }
 
-export interface GaugePayload {
-  value: number
-  min: number
-  max: number
-  unit?: string
-  valueLabel: string
-  /** Pre-formatted range ends, e.g. "0%" and "100%". Shown only if both are set. */
-  minLabel?: string
-  maxLabel?: string
-  severity?: Severity
-}
-
 export interface SeriesPayload {
   series: SeriesDef[]
   points: Point[]
   xLabel?: string
   yLabel?: string
   unit?: string
-}
-
-export interface DonutPayload {
-  slices: { id: string; label: string; value: number; colorIndex?: number }[]
-  centerLabel?: string
-  centerValue?: string
-}
-
-export interface HeatmapPayload {
-  xLabels: string[]
-  yLabels: string[]
-  /** Row-major values, cells[y][x]; null renders as an empty cell. */
-  cells: (number | null)[][]
-  unit?: string
-}
-
-export interface AlertPayload {
-  severity: Severity
-  headline: string
-  detail?: string
-  /** Pre-formatted, e.g. "since 14:02" or "4 today". */
-  meta?: string
 }
 
 export interface CameraFeed {
@@ -208,27 +162,11 @@ export interface CameraGridPayload {
   feeds: CameraFeed[]
 }
 
-export interface TableColumn {
-  key: string
-  label: string
-  align?: 'start' | 'end'
-}
-
-export interface TablePayload {
-  columns: TableColumn[]
-  rows: Record<string, string | number | null>[]
-}
-
 /** Discriminated by the owning element's `type`. */
 export type ElementPayload =
   | { type: 'kpi'; data: KpiPayload }
   | { type: 'stat-group'; data: StatGroupPayload }
-  | { type: 'gauge'; data: GaugePayload }
-  | { type: 'line' | 'bar' | 'stacked-bar' | 'histogram'; data: SeriesPayload }
-  | { type: 'donut'; data: DonutPayload }
-  | { type: 'heatmap'; data: HeatmapPayload }
-  | { type: 'alert'; data: AlertPayload }
-  | { type: 'table'; data: TablePayload }
+  | { type: 'line' | 'histogram'; data: SeriesPayload }
   | { type: 'camera-grid'; data: CameraGridPayload }
 
 export type ElementResponse = ElementPayload & {

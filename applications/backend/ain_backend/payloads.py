@@ -304,21 +304,6 @@ def _build_stat_group(context: _Context) -> models.StatGroupPayload:
 	return _split_stats(context)
 
 
-def _build_gauge(context: _Context) -> models.GaugePayload:
-	"""A percentage against its band."""
-	value = round(
-		context.rand.uniform(context.spec.value_min, context.spec.value_max)
-	)
-	return models.GaugePayload(
-		value=value,
-		min=0,
-		max=100,
-		unit=context.unit(),
-		value_label=context.format(value),
-		severity=formatting.gauge_severity(value),
-	)
-
-
 def _build_series(context: _Context) -> models.SeriesPayload:
 	"""A line over the window's x axis."""
 	spec = context.spec
@@ -364,156 +349,9 @@ def _build_histogram(context: _Context) -> models.SeriesPayload:
 	)
 
 
-def _build_bar(context: _Context) -> models.SeriesPayload:
-	"""One bar per category."""
-	spec = context.spec
-	categories = context.x_labels
-	return models.SeriesPayload(
-		series=[
-			models.SeriesDef(
-				id='value', label=context.text(spec.title), color_index=1
-			)
-		],
-		points=[
-			{
-				'x': category,
-				'value': round(
-					context.rand.uniform(spec.value_min, spec.value_max)
-				),
-			}
-			for category in categories
-		],
-		x_label=context.text(spec.title),
-		y_label=context.text(i18n.COUNT),
-		unit=context.unit(),
-	)
-
-
-def _build_stacked_bar(context: _Context) -> models.SeriesPayload:
-	"""Three violation types stacked per day."""
-	spec = context.spec
-	series = (
-		('gloves', i18n.Text('Gloves', 'القفازات')),
-		('hair', i18n.Text('Hair cover', 'تغطية الشعر')),
-		('mask', i18n.Text('Mask', 'الكمامة')),
-	)
-	labels = context.x_labels[-7:]
-	points: list[models.Point] = []
-	for label in labels:
-		point: models.Point = {'x': label}
-		for series_id, _ in series:
-			point[series_id] = round(
-				context.rand.uniform(spec.value_min, spec.value_max)
-			)
-		points.append(point)
-	return models.SeriesPayload(
-		series=[
-			models.SeriesDef(
-				id=series_id,
-				label=context.text(label),
-				color_index=index,
-			)
-			for index, (series_id, label) in enumerate(series)
-		],
-		points=points,
-		x_label=context.text(i18n.DAY),
-		y_label=context.text(i18n.COUNT),
-		unit=context.unit(),
-	)
-
-
-def _build_donut(context: _Context) -> models.DonutPayload:
-	"""Parts of a whole, with the total in the middle."""
-	spec = context.spec
-	slices = [
-		models.DonutSlice(
-			id=slice_id,
-			label=context.text(label),
-			value=round(
-				context.rand.uniform(spec.value_min, spec.value_max)
-			),
-			color_index=index,
-		)
-		for index, (slice_id, label) in enumerate(
-			(
-				('male', i18n.MALE),
-				('female', i18n.FEMALE),
-				('unknown', i18n.UNKNOWN),
-			)
-		)
-	]
-	return models.DonutPayload(
-		slices=slices,
-		center_label=context.text(i18n.TOTAL),
-		center_value=str(round(sum(item.value for item in slices))),
-	)
-
-
-def _build_heatmap(context: _Context) -> models.HeatmapPayload:
-	"""Hours across the week."""
-	spec = context.spec
-	cells = [
-		[
-			round(context.rand.uniform(spec.value_min, spec.value_max))
-			for _ in _HOURS
-		]
-		for _ in i18n.WEEKDAYS
-	]
-	return models.HeatmapPayload(
-		x_labels=list(_HOURS),
-		y_labels=[day.get(context.locale) for day in i18n.WEEKDAYS],
-		cells=cells,
-		unit=context.unit(),
-	)
-
-
-def _build_alert(context: _Context) -> models.AlertPayload:
-	"""A live state: is this happening right now, and since when."""
-	severity = formatting.rolled_severity(context.rand)
-	headline = {
-		models.Severity.OK: i18n.NO_ACTIVE_ALERT,
-		models.Severity.INFO: i18n.NO_ACTIVE_ALERT,
-		models.Severity.WARN: i18n.THRESHOLD_APPROACHING,
-		models.Severity.CRITICAL: i18n.ACTIVE_NOW,
-	}[severity]
-	if severity is models.Severity.OK:
-		meta = context.text(i18n.LAST_FLAGGED)
-	else:
-		hour = context.rand.randint(10, 18)
-		minute = context.rand.randint(0, 59)
-		meta = f'{context.text(i18n.SINCE)} {hour:02d}:{minute:02d}'
-	return models.AlertPayload(
-		severity=severity,
-		headline=context.text(headline),
-		detail=context.text(context.spec.description),
-		meta=meta,
-	)
-
-
 def _camera_label(camera_id: str, locale: i18n.Locale) -> str:
 	"""Names a camera the way every payload names it."""
 	return f'{i18n.CAMERA.get(locale)} {camera_id}'
-
-
-def _build_table(context: _Context) -> models.TablePayload:
-	"""The camera layout, one row per feed."""
-	return models.TablePayload(
-		columns=[
-			models.TableColumn(
-				key='camera', label=context.text(i18n.CAMERA)
-			),
-			models.TableColumn(
-				key='zone', label=context.text(i18n.COVERAGE_ZONE)
-			),
-		],
-		rows=[
-			{
-				'camera': _camera_label(camera.id, context.locale),
-				'zone': context.text(camera.zone),
-			}
-			for camera in catalogue.CAMERAS
-		],
-	)
 
 
 def _build_camera_grid(context: _Context) -> models.CameraGridPayload:
@@ -543,15 +381,8 @@ def _build_camera_grid(context: _Context) -> models.CameraGridPayload:
 _BUILDERS: dict[models.ElementType, Callable[[_Context], models.Payload]] = {
 	models.ElementType.KPI: _build_kpi,
 	models.ElementType.STAT_GROUP: _build_stat_group,
-	models.ElementType.GAUGE: _build_gauge,
 	models.ElementType.LINE: _build_series,
 	models.ElementType.HISTOGRAM: _build_histogram,
-	models.ElementType.BAR: _build_bar,
-	models.ElementType.STACKED_BAR: _build_stacked_bar,
-	models.ElementType.DONUT: _build_donut,
-	models.ElementType.HEATMAP: _build_heatmap,
-	models.ElementType.ALERT: _build_alert,
-	models.ElementType.TABLE: _build_table,
 	models.ElementType.CAMERA_GRID: _build_camera_grid,
 }
 

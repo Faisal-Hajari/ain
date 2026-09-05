@@ -14,13 +14,13 @@ import type { ElementType, SeriesPayload } from '@/api/types'
 import { chartColor } from '@/components/ui/severity'
 import { ChartFrame, axisProps, tooltipProps, type ElementSize } from './ChartFrame'
 
-/** line, bar, stacked-bar and histogram all read the same payload shape. */
+/** line and histogram both read the same payload shape. */
 export function SeriesView({
   type,
   data,
   size,
 }: {
-  type: Extract<ElementType, 'line' | 'bar' | 'stacked-bar' | 'histogram'>
+  type: Extract<ElementType, 'line' | 'histogram'>
   data: SeriesPayload
   size?: ElementSize
 }) {
@@ -66,10 +66,9 @@ export function SeriesView({
     )
   }
 
-  const stacked = type === 'stacked-bar'
   return (
     <ChartFrame height={height}>
-      <BarChart data={data.points} margin={margin} barCategoryGap={type === 'histogram' ? 2 : '20%'}>
+      <BarChart data={data.points} margin={margin} barCategoryGap={2}>
         {grid}
         <XAxis dataKey="x" {...axisProps}>
           {xTitle}
@@ -84,9 +83,8 @@ export function SeriesView({
             key={series.id}
             dataKey={series.id}
             name={series.label}
-            stackId={stacked ? 'stack' : undefined}
             fill={chartColor(series.colorIndex)}
-            radius={stacked ? 0 : [6, 6, 0, 0]}
+            radius={[6, 6, 0, 0]}
           />
         ))}
       </BarChart>

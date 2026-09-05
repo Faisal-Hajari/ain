@@ -11,7 +11,6 @@ from ain_backend import alerts
 from ain_backend import catalogue
 from ain_backend import main
 from ain_backend import models
-from ain_backend import payloads
 
 FILTERS = {'branch': 'olaya', 'venue': 'cafe', 'range': 'today'}
 
@@ -19,7 +18,7 @@ FILTERS = {'branch': 'olaya', 'venue': 'cafe', 'range': 'today'}
 @pytest.fixture(name='client')
 def client_fixture() -> fastapi.testclient.TestClient:
 	"""Returns a client bound to the app, with an empty rule store."""
-	alerts.store().clear()
+	alerts.RULES.clear()
 	return fastapi.testclient.TestClient(main.app)
 
 
@@ -100,7 +99,7 @@ def test_alert_kind_elements_are_not_offered_as_monitors(client):
 
 
 def assert_series_payload(data: dict):
-	"""Asserts the shape shared by line, bar, stacked-bar, histogram."""
+	"""Asserts the shape shared by line and histogram."""
 	assert data['series'] and data['points']
 	assert data['xLabel'] and data['yLabel']
 	series_ids = [series['id'] for series in data['series']]
@@ -133,22 +132,6 @@ def assert_stat_group_payload(data: dict):
 		assert str(round(float(last[stat['id']]))) in stat['value']
 
 
-def assert_heatmap_payload(data: dict):
-	"""The matrix has to match its own axes."""
-	assert len(data['cells']) == len(data['yLabels'])
-	assert all(
-		len(row) == len(data['xLabels']) for row in data['cells']
-	)
-
-
-def assert_table_payload(data: dict):
-	"""Every column key is present in every row."""
-	keys = [column['key'] for column in data['columns']]
-	assert data['columns']
-	for row in data['rows']:
-		assert set(keys) <= set(row)
-
-
 def assert_camera_grid_payload(data: dict):
 	"""A tile carries both the status and the word for it."""
 	assert data['feeds']
@@ -159,64 +142,20 @@ def assert_camera_grid_payload(data: dict):
 			assert 'streamUrl' not in feed
 
 
-def assert_gauge_payload(data: dict):
-	"""The needle sits inside the band, and prints its own label."""
-	assert data['min'] <= data['value'] <= data['max']
-	assert data['valueLabel']
-
-
-def assert_donut_payload(data: dict):
-	"""Slices are numeric; the centre is the pre-formatted total."""
-	assert data['slices']
-	assert all(
-		isinstance(item['value'], (int, float)) for item in data['slices']
-	)
-	assert isinstance(data['centerValue'], str)
-
-
-def assert_alert_payload(data: dict):
-	"""A live state says what it is and how bad it is."""
-	assert data['severity'] in {'ok', 'info', 'warn', 'critical'}
-	assert data['headline']
-
-
 _ASSERTIONS = {
 	'kpi': assert_kpi_payload,
 	'stat-group': assert_stat_group_payload,
 	'line': assert_series_payload,
-	'bar': assert_series_payload,
-	'stacked-bar': assert_series_payload,
 	'histogram': assert_series_payload,
-	'heatmap': assert_heatmap_payload,
-	'table': assert_table_payload,
 	'camera-grid': assert_camera_grid_payload,
-	'gauge': assert_gauge_payload,
-	'donut': assert_donut_payload,
-	'alert': assert_alert_payload,
 }
 
 
 def test_every_served_element_type_is_in_the_contract(client):
-	"""The catalogue is a subset of the contract, not a tour of it.
-
-	The dashboard is scoped to a fixed set of cards, so most element types have
-	no card today. What must hold is that nothing is served which the frontend
-	cannot render, and that anything served is covered by an assertion here.
-	"""
+	"""Nothing is served that the frontend cannot render."""
 	served = {element['type'] for element in element_defs(client)}
 	assert served <= {member.value for member in models.ElementType}
 	assert served <= set(_ASSERTIONS)
-
-
-def test_every_element_type_in_the_contract_has_a_builder():
-	"""The reference implementation stays complete even where unused.
-
-	Adding a card of an existing type should be a catalogue edit alone, so a
-	type losing its last card must not quietly lose the ability to be served.
-	Reaching into the private map is deliberate: there is no configured element
-	to reach these builders through.
-	"""
-	assert set(payloads._BUILDERS) == set(models.ElementType)
 
 
 @pytest.mark.parametrize('element', catalogue.ELEMENTS, ids=lambda e: e.id)
@@ -359,5 +298,6 @@ def test_deleting_an_absent_rule_is_still_204(client):
 
 
 def test_media_urls_answer_a_404_rather_than_hanging(client):
+	"""No route serves media, so the URLs the payloads link to 404."""
 	assert client.get('/api/clips/congestion-count/0.mp4').status_code == 404
 	assert client.get('/api/cameras/03/stream.m3u8').status_code == 404

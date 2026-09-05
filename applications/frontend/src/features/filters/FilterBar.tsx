@@ -34,8 +34,6 @@ export function FilterBar({
             locale={locale}
             labels={{
               from: t.startingFrom,
-              previousMonth: t.previousMonth,
-              nextMonth: t.nextMonth,
               chooseStartDate: t.chooseStartDate,
             }}
           />

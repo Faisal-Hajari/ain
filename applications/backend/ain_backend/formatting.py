@@ -15,10 +15,7 @@ class ValueFormat(enum.StrEnum):
 	"""How an element's numbers are turned into display strings."""
 
 	COUNT = 'count'
-	PEOPLE = 'people'
 	DURATION = 'duration'
-	HOURS = 'hours'
-	PERCENT = 'percent'
 
 
 def format_duration(minutes: float, locale: i18n.Locale) -> str:
@@ -30,17 +27,6 @@ def format_duration(minutes: float, locale: i18n.Locale) -> str:
 	if locale is i18n.Locale.AR:
 		return f'{whole} د {seconds} ث'
 	return f'{whole}m {seconds}s'
-
-
-def format_hours(minutes: float, locale: i18n.Locale) -> str:
-	"""Renders a long duration as "7h 8m" / "7 س 8 د"."""
-	hours = int(minutes // 60)
-	remainder = round(minutes - hours * 60)
-	if remainder == 60:
-		hours, remainder = hours + 1, 0
-	if locale is i18n.Locale.AR:
-		return f'{hours} س {remainder} د'
-	return f'{hours}h {remainder}m'
 
 
 def format_value(
@@ -58,10 +44,6 @@ def format_value(
 	"""
 	if value_format is ValueFormat.DURATION:
 		return format_duration(value, locale)
-	if value_format is ValueFormat.HOURS:
-		return format_hours(value, locale)
-	if value_format is ValueFormat.PERCENT:
-		return f'{round(value)}%'
 	return str(round(value))
 
 
@@ -125,14 +107,5 @@ def rolled_severity(rand: random.Random) -> models.Severity:
 	if roll > 0.88:
 		return models.Severity.CRITICAL
 	if roll > 0.65:
-		return models.Severity.WARN
-	return models.Severity.OK
-
-
-def gauge_severity(value: float) -> models.Severity:
-	"""Judges a 0-100 gauge reading."""
-	if value > 90:
-		return models.Severity.CRITICAL
-	if value > 75:
 		return models.Severity.WARN
 	return models.Severity.OK

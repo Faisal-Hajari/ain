@@ -1,0 +1,30 @@
+# Config for the `cameras` service in docker-compose.yml.
+# Reference: https://github.com/bluenviron/mediamtx/blob/v1.20.1/mediamtx.yml
+
+logLevel: info
+
+# Only RTSP is read from this server; the rest would bind ports nothing uses.
+rtmp: false
+hls: false
+webrtc: false
+srt: false
+moq: false
+
+paths:
+  # One block for all ten cameras. A path name prefixed with `~` is a regular
+  # expression, so cam3, cam4, ... cam15 all match, and each finds its own
+  # recording at /videos/<path>.mp4 (mounted by compose).
+  #
+  # runOnDemand starts ONE ffmpeg for the path when the first reader arrives;
+  # MediaMTX fans that single stream out to every other reader, so ten viewers
+  # still cost one encoder. It is stopped 10s after the last reader leaves.
+  #
+  # -stream_loop -1 loops the file inside ffmpeg, so the process never restarts
+  # and the stream has no seam to hide. -c copy remuxes the recording's own
+  # H.265 as-is: no re-encoding, so this stays cheap. A client that needs H.264
+  # is a -c:v libx264 here, not a server of our own.
+  '~^cam\d+$':
+    runOnDemand: >
+      ffmpeg -hide_banner -loglevel error -stream_loop -1 -re
+      -i /videos/$MTX_PATH.mp4 -c copy -f rtsp rtsp://localhost:$RTSP_PORT/$MTX_PATH
+    runOnDemandRestart: yes

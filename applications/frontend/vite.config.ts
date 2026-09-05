@@ -36,7 +36,7 @@ export default defineConfig(({ mode }) => {
     server: {
       host: true,
       port: 5173,
-      // Only reached when VITE_API_MOCK is off: the real backend serves /api.
+      // The real backend serves /api.
       proxy: {
         '/api': { target: env.VITE_API_TARGET ?? 'http://localhost:8000', changeOrigin: true },
       },

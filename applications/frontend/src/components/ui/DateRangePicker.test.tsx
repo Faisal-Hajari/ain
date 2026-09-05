@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { MemoryRouter, useLocation } from 'react-router'
 import { describe, expect, it } from 'vitest'
 import type { FilterOption } from '@/api/types'
 import { DateRangePicker } from './DateRangePicker'
@@ -10,7 +10,12 @@ const OPTIONS: FilterOption[] = [
   { value: '30d', label: 'Last 30 days' },
 ]
 
-const LABELS = { from: 'From', previousMonth: 'Previous month', nextMonth: 'Next month', chooseStartDate: 'Or pick a start date' }
+const LABELS = { from: 'From', chooseStartDate: 'Or pick a start date' }
+
+/** Surfaces the URL the control writes, since the write is the whole behaviour. */
+function Search() {
+  return <output data-testid="search">{useLocation().search}</output>
+}
 
 function setup(value: string, entry = '/', today = '2026-09-05') {
   return render(
@@ -24,9 +29,13 @@ function setup(value: string, entry = '/', today = '2026-09-05') {
         locale="en"
         labels={LABELS}
       />
+      <Search />
     </MemoryRouter>,
   )
 }
+
+const search = () => screen.getByTestId('search').textContent
+const dateInput = () => screen.getByLabelText('Or pick a start date') as HTMLInputElement
 
 /**
  * The range and calendar params are read straight off the URL, which anyone can
@@ -54,41 +63,67 @@ describe('DateRangePicker with untrusted URL input', () => {
     expect(screen.getByRole('button', { name: /date range/i })).toHaveTextContent('Today')
   })
 
-  it('ignores a malformed calendarMonth and opens on today instead', () => {
-    expect(() => setup('today', '/?calendar=open&calendarMonth=zzz')).not.toThrow()
-    expect(screen.getByText('September 2026')).toBeTruthy()
+  it('leaves the date input empty for a preset value', () => {
+    setup('7d', '/?calendar=open')
+    expect(dateInput().value).toBe('')
   })
 
-  it('ignores an out-of-range month number', () => {
-    expect(() => setup('today', '/?calendar=open&calendarMonth=2026-13')).not.toThrow()
-    expect(screen.getByText('September 2026')).toBeTruthy()
+  it('does not feed an unparseable value to the date input', () => {
+    expect(() => setup('2026-02-31', '/?calendar=open')).not.toThrow()
+    expect(dateInput().value).toBe('')
+  })
+
+  it('pre-fills the date input with a valid ISO value', () => {
+    setup('2026-09-02', '/?calendar=open')
+    expect(dateInput().value).toBe('2026-09-02')
   })
 
   /**
-   * `today` is backend JSON, and it reaches a formatter through the month grid.
-   * FilterBar sits above every card-level boundary, so a throw here takes the
-   * page down rather than one card.
+   * `today` is backend JSON, and it bounds the input's `max`. FilterBar sits
+   * above every card-level boundary, so a throw here takes the page down rather
+   * than one card.
    */
-  it('withholds the calendar rather than throwing on a malformed today', () => {
+  it('withholds the date input rather than throwing on a malformed today', () => {
     expect(() => setup('today', '/?calendar=open', '05/09/2026')).not.toThrow()
-    expect(screen.queryByText('Or pick a start date')).toBeNull()
+    expect(screen.queryByLabelText('Or pick a start date')).toBeNull()
     // The presets still work without a trustworthy today.
     expect(screen.getByRole('button', { name: 'Last 7 days' })).toBeInTheDocument()
   })
 
-  it('withholds the calendar when today is a real-looking but impossible date', () => {
+  it('withholds the date input when today is a real-looking but impossible date', () => {
     expect(() => setup('today', '/?calendar=open', '2026-02-31')).not.toThrow()
-    expect(screen.queryByText('Or pick a start date')).toBeNull()
+    expect(screen.queryByLabelText('Or pick a start date')).toBeNull()
   })
 
-  it('shows the calendar when today is valid', () => {
+  it('shows the date input when today is valid', () => {
     setup('today', '/?calendar=open')
-    expect(screen.getByText('Or pick a start date')).toBeInTheDocument()
+    expect(dateInput()).toBeInTheDocument()
   })
 
-  it('disables days after today', () => {
+  /** jsdom does not enforce `max`, so assert the bound the browser enforces. */
+  it('bounds the input at today so future days cannot be picked', () => {
     setup('today', '/?calendar=open')
-    expect(screen.getByRole('button', { name: '4' })).not.toBeDisabled()
-    expect(screen.getByRole('button', { name: '6' })).toBeDisabled()
+    expect(dateInput()).toHaveAttribute('max', '2026-09-05')
+  })
+
+  it('writes the picked day and closes the panel in one go', () => {
+    setup('today', '/?calendar=open')
+    fireEvent.change(dateInput(), { target: { value: '2026-09-02' } })
+    expect(new URLSearchParams(search() ?? '').get('range')).toBe('2026-09-02')
+    expect(search()).not.toContain('calendar')
+    expect(screen.queryByLabelText('Or pick a start date')).toBeNull()
+  })
+
+  it('ignores a cleared date input', () => {
+    setup('2026-09-02', '/?calendar=open')
+    fireEvent.change(dateInput(), { target: { value: '' } })
+    expect(search()).toContain('calendar=open')
+  })
+
+  it('writes a preset and closes the panel', () => {
+    setup('today', '/?calendar=open')
+    fireEvent.click(screen.getByRole('button', { name: 'Last 7 days' }))
+    expect(new URLSearchParams(search() ?? '').get('range')).toBe('7d')
+    expect(search()).not.toContain('calendar')
   })
 })
