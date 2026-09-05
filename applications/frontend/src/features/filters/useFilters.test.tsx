@@ -58,22 +58,23 @@ describe('useUrlWriter', () => {
   })
 
   /**
-   * It does change when the URL changes, and must: react-router rebuilds
-   * setSearchParams per location, so pinning the identity across a navigation
-   * would leave the updater resolving against the previous URL. Effects
-   * re-subscribe once per navigation, which is the intended cost.
+   * The property that matters after a navigation is that the next write builds
+   * on the new URL rather than the one captured when the writer was created.
+   * Whether react-router hands back the same function reference is its business.
    */
-  it('takes a new identity after a navigation', () => {
+  it('resolves a later write against the current URL, not the one it was created on', () => {
     const { result } = renderHook(
       () => ({ write: useUrlWriter(), search: useLocation().search }),
       { wrapper: wrapper('/?range=today') },
     )
 
-    const before = result.current.write
-    act(() => before({ range: '30d' }))
+    act(() => result.current.write({ branch: 'malaz' }))
+    act(() => result.current.write({ venue: 'cafe' }))
 
-    expect(result.current.search).toContain('range=30d')
-    expect(result.current.write).not.toBe(before)
+    const params = new URLSearchParams(result.current.search)
+    expect(params.get('range')).toBe('today')
+    expect(params.get('branch')).toBe('malaz')
+    expect(params.get('venue')).toBe('cafe')
   })
 })
 
