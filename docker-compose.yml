@@ -20,14 +20,6 @@ services:
       # nginx proxies /api from the same origin, so the browser never makes a
       # cross-origin call; these are for hitting the API from a dev server.
       AIN_CORS_ORIGINS: "http://localhost:5173,http://localhost:3000"
-      # Reads only, and best-effort: unset the URL and every card falls back
-      # to the generated payloads.
-      AIN_CLICKHOUSE_URL: "http://clickhouse:8123"
-      AIN_CLICKHOUSE_USER: "ain"
-      AIN_CLICKHOUSE_PASSWORD: "ain"
-    depends_on:
-      clickhouse:
-        condition: service_healthy
     restart: unless-stopped
 
   # Single-node KRaft broker - no ZooKeeper, no volume. The topic is the seam
@@ -56,8 +48,8 @@ services:
       start_period: 20s
     restart: unless-stopped
 
-  # No schema yet: until one creates `ain.events` the backend's reads fail
-  # closed and every card falls back to its generated payload.
+  # Nothing reads it yet: no schema, and the API does not connect. This is the
+  # server and its data directory, ready for both.
   clickhouse:
     image: clickhouse/clickhouse-server:25.3
     environment:

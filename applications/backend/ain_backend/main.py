@@ -74,13 +74,8 @@ app.add_middleware(
 
 @app.get('/health')
 def health() -> dict[str, str]:
-	"""Reports that the service is up.
-
-	Answers without touching ClickHouse: this is what the container's
-	healthcheck polls, so it says whether the process is serving and
-	nothing about what is behind it.
-	"""
-	return {'status': 'ok'}
+	"""Reports that the service is up, and what is behind it."""
+	return {'status': 'ok', 'source': 'dummy'}
 
 
 @app.get('/api/dashboard/config', response_model_exclude_none=True)
@@ -131,12 +126,7 @@ def read_instances(element_id: str, scope: Scope) -> models.InstanceLog:
 	"""
 	try:
 		return payloads.build_instance_log(
-			element_id,
-			scope.seed_key,
-			scope.locale,
-			scope.range,
-			scope.branch,
-			scope.venue,
+			element_id, scope.seed_key, scope.locale, scope.range
 		)
 	except payloads.UnknownElementError as error:
 		raise fastapi.HTTPException(
