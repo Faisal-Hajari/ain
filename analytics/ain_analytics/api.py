@@ -227,7 +227,7 @@ def read_zones() -> dict:
 
 @app.get('/occupancy')
 def read_occupancy(
-	scope: Window, zone: str = 'indoor', interval: int = 300
+	scope: Window, zone: str = 'indoor', interval: int = 300, tz: str = 'UTC'
 ) -> dict:
 	"""How many people stood in a zone, bucketed over time.
 
@@ -235,6 +235,9 @@ def read_occupancy(
 		scope: The time range.
 		zone: A zone name from cameras.yml.
 		interval: Bucket size in seconds.
+		tz: An IANA timezone name. A daily bucket starts at midnight
+			there rather than at UTC's, or three hours of every local day
+			land on the bar before.
 
 	Returns:
 		The series plus its summary, in people. `mean` is time-weighted,
@@ -242,7 +245,7 @@ def read_occupancy(
 	"""
 	area = _zone(zone)
 	size = queries.bucket_seconds(scope, interval)
-	buckets = queries.occupancy(db.client(), area, scope, size)
+	buckets = queries.occupancy(db.client(), area, scope, size, tz)
 	# Weighted by how long each bucket covers: the first and last of a
 	# window are partial, and a plain average would weight a one-second
 	# sliver like a five-minute interval.
@@ -269,7 +272,11 @@ def read_occupancy(
 
 @app.get('/dwell')
 def read_dwell(
-	scope: Window, zone: str = 'tables', buckets: str = '', interval: int = 3600
+	scope: Window,
+	zone: str = 'tables',
+	buckets: str = '',
+	interval: int = 3600,
+	tz: str = 'UTC',
 ) -> dict:
 	"""How long each visit to a zone lasted.
 
@@ -280,6 +287,7 @@ def read_dwell(
 			caller chooses them because the caller is the one drawing the
 			chart.
 		interval: Bucket size for the over-time series, in seconds.
+		tz: An IANA timezone name, for whole-day bucket alignment.
 
 	Returns:
 		Per-part statistics and the histogram, in seconds.
@@ -298,7 +306,7 @@ def read_dwell(
 	else:
 		edges = [0, 600, 1200, 1800, 2700, 3600]
 	size = queries.bucket_seconds(scope, interval)
-	result = queries.dwell(db.client(), area, scope, edges, size)
+	result = queries.dwell(db.client(), area, scope, edges, size, tz)
 	return {
 		'zone': zone,
 		'cameras': list(area.cameras),
@@ -310,7 +318,7 @@ def read_dwell(
 
 @app.get('/footfall')
 def read_footfall(
-	scope: Window, line: str = 'entrance', interval: int = 3600
+	scope: Window, line: str = 'entrance', interval: int = 3600, tz: str = 'UTC'
 ) -> dict:
 	"""People crossing a counting line, in each direction.
 
@@ -318,13 +326,14 @@ def read_footfall(
 		scope: The time range.
 		line: A line name from cameras.yml.
 		interval: Bucket size in seconds.
+		tz: An IANA timezone name, for whole-day bucket alignment.
 
 	Returns:
 		The series plus its totals, in people.
 	"""
 	counter = _line(line)
 	size = queries.bucket_seconds(scope, interval)
-	buckets = queries.footfall(db.client(), counter, scope, size)
+	buckets = queries.footfall(db.client(), counter, scope, size, tz)
 	return {
 		'line': line,
 		'unit': 'people',
@@ -347,6 +356,8 @@ def read_events(
 	threshold: float = 0,
 	for_seconds: int = 0,
 	type: str = 'threshold',
+	interval: int | None = None,
+	tz: str = 'UTC',
 ) -> dict:
 	"""Evaluates one alert rule over one window.
 
@@ -360,6 +371,10 @@ def read_events(
 			visit metric ignores it: the visit's own length is the test.
 		type: What to label the results, so a named wrapper reads back
 			as itself.
+		interval: Bucket size for a series metric, in seconds. A
+			threshold is authored in the units its metric is read in, so
+			a rate like footfall needs the interval it was authored for.
+		tz: An IANA timezone name, for whole-day bucket alignment.
 
 	Returns:
 		The occurrences, each carrying the geometry it was raised on so
@@ -378,6 +393,8 @@ def read_events(
 			window=scope,
 			for_seconds=for_seconds,
 			kind=type,
+			interval=interval,
+			tz=tz,
 		)
 	except events_module.UnknownMetricError as error:
 		raise fastapi.HTTPException(
@@ -401,30 +418,41 @@ def read_events(
 
 @app.get('/events/congestion')
 def read_congestion(
-	scope: Window, n: float = 12, m: float = 2, zone: str = 'indoor'
+	scope: Window,
+	n: float = 12,
+	m: float = 2,
+	zone: str = 'indoor',
+	tz: str = 'UTC',
 ) -> dict:
 	"""Times occupancy stayed above `n` people for `m` minutes."""
 	return read_events(
-		scope, 'occupancy', zone, 'above', n, int(m * 60), 'congestion'
+		scope, 'occupancy', zone, 'above', n, int(m * 60), 'congestion',
+		tz=tz,
 	)
 
 
 @app.get('/events/empty')
 def read_empty(
-	scope: Window, n: float = 1, m: float = 10, zone: str = 'indoor'
+	scope: Window,
+	n: float = 1,
+	m: float = 10,
+	zone: str = 'indoor',
+	tz: str = 'UTC',
 ) -> dict:
 	"""Times occupancy stayed below `n` people for `m` minutes."""
 	return read_events(
-		scope, 'occupancy', zone, 'below', n, int(m * 60), 'empty'
+		scope, 'occupancy', zone, 'below', n, int(m * 60), 'empty', tz=tz
 	)
 
 
 @app.get('/events/long-wait')
 def read_long_wait(
-	scope: Window, m: float = 5, zone: str = 'queue'
+	scope: Window, m: float = 5, zone: str = 'queue', tz: str = 'UTC'
 ) -> dict:
 	"""Visits to `zone` that lasted longer than `m` minutes."""
-	return read_events(scope, 'dwell', zone, 'above', m * 60, 0, 'long-wait')
+	return read_events(
+		scope, 'dwell', zone, 'above', m * 60, 0, 'long-wait', tz=tz
+	)
 
 
 @app.get('/overlay')

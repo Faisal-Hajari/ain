@@ -172,11 +172,15 @@ def main() -> int:
 			'bootstrap.servers': settings.kafka_brokers,
 			'group.id': os.environ.get('KAFKA_GROUP_ID', 'ain-track-ingest'),
 			'auto.offset.reset': 'latest',
-			# At-least-once, which the schema is built to tolerate: occupancy
-			# is a uniq over track ids, dwell is max(ts) - min(ts), and a
-			# crossing needs two distinct positions. A replayed row changes
-			# none of them, and ReplacingMergeTree eventually drops it.
-			'enable.auto.commit': True,
+			# Offsets are committed after the insert, not on a timer. That
+			# makes this at-least-once, which the schema is built to
+			# tolerate: occupancy is a uniq over track ids, dwell is
+			# max(ts) - min(ts), and a crossing needs two distinct
+			# positions, so a replayed row changes none of them and
+			# ReplacingMergeTree eventually drops it. Committing on a timer
+			# would make it at-MOST-once instead, and a restart would lose
+			# whatever was in flight.
+			'enable.auto.commit': False,
 		}
 	)
 	consumer.subscribe([settings.kafka_topic])
@@ -188,6 +192,7 @@ def main() -> int:
 	try:
 		for batch in _consume(consumer):
 			client.insert(db.TABLE, batch, column_names=list(db.COLUMNS))
+			consumer.commit(asynchronous=True)
 			total += len(batch)
 			_LOG.debug('inserted %s rows (%s total)', len(batch), total)
 	finally:

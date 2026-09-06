@@ -82,9 +82,17 @@ paths:
   #
   # -stream_loop -1 loops the file inside ffmpeg, so the process never restarts
   # and the stream has no seam to hide. The recordings are H.265, which no
-  # browser plays over HLS, so this re-encodes to H.264; the files are 720p15
-  # already, so there is nothing to scale. -g 15 puts a keyframe every second,
-  # which is what lets HLS cut one-second segments.
+  # browser plays over HLS, so this re-encodes to H.264; they are already
+  # 720p, so there is nothing to scale.
+  #
+  # -r 15 is not cosmetic. These files average 15 fps but DECLARE
+  # r_frame_rate 50 - the shortest gap between two frames, not the rate - and
+  # with no -r ffmpeg takes that declaration as the output rate and duplicates
+  # frames to fill it. Every one of those duplicates is then a frame encoded
+  # here, decoded on the GPU, run through the detector, published to Kafka and
+  # stored in ClickHouse: measured at 42-46 fps per camera before this line,
+  # about three times the work for no extra information. -g 15 then puts a
+  # keyframe every second, which is what lets HLS cut one-second segments.
   #
   # -rtsp_transport tcp on the way in is not optional: over UDP this hop drops
   # packets even on loopback, and a dropped RTP packet is a dropped frame.
@@ -97,6 +105,7 @@ paths:
     runOnDemand: >
       ffmpeg -hide_banner -loglevel error -stream_loop -1 -re
       -i /videos/$MTX_PATH.mp4 -an -c:v libx264 -preset ultrafast
-      -tune zerolatency -g 15 -f rtsp -rtsp_transport tcp
+      -tune zerolatency -fps_mode cfr -r 15 -g 15
+      -f rtsp -rtsp_transport tcp
       rtsp://localhost:$RTSP_PORT/$MTX_PATH
     runOnDemandRestart: yes

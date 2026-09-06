@@ -112,7 +112,9 @@ def stream(path: str, params: dict[str, object]):
 		response = urllib.request.urlopen(
 			f'{_BASE_URL}{path}?{query}', timeout=_CLIP_TIMEOUT
 		)
-	except (urllib.error.URLError, TimeoutError, OSError) as error:
+	except (urllib.error.URLError, TimeoutError, ValueError, OSError) as error:
+		# ValueError covers a path or parameter that will not make a URL,
+		# which is a 404 for the caller rather than a 500.
 		_LOG.info('analytics unavailable (%s): %s', path, error)
 		return None
 	if response.status != 200:

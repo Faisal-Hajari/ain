@@ -34,7 +34,20 @@ def test_the_overlay_cap_is_a_minute():
 def test_the_series_is_zero_filled():
 	# Without WITH FILL a bucket nobody was seen in is missing rather than
 	# zero, and every average is taken over only the busy buckets.
-	assert 'WITH FILL' in queries._fill(_window(3600), 300)
+	assert 'WITH FILL' in queries._fill(_window(3600), 300, 'UTC')
+
+
+def test_a_daily_bucket_is_aligned_to_a_local_midnight():
+	# toStartOfInterval aligns a second-based interval to the epoch no
+	# matter what timezone it is handed, so a whole day has to be asked
+	# for in DAY units - otherwise the first three hours of every Riyadh
+	# day land on the bar before.
+	daily = queries.bucket_expr('ts', 86400, 'Asia/Riyadh')
+	assert "INTERVAL 1 DAY, 'Asia/Riyadh'" in daily
+
+
+def test_a_sub_day_bucket_stays_in_seconds():
+	assert 'INTERVAL 300 SECOND' in queries.bucket_expr('ts', 300, 'Asia/Riyadh')
 
 
 @pytest.mark.parametrize(

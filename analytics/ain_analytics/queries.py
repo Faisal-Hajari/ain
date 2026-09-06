@@ -96,12 +96,36 @@ def bucket_seconds(window: Window, requested: int) -> int:
 	return max(1, requested, floor)
 
 
-def _fill(window: Window, interval: int) -> str:
+def bucket_expr(column: str, interval: int, tz: str) -> str:
+	"""Buckets a timestamp, aligning whole days to a local midnight.
+
+	Args:
+		column: The expression to bucket.
+		interval: The bucket size, in seconds.
+		tz: An IANA timezone name.
+
+	Returns:
+		A `toStartOfInterval` call. A second-based interval is aligned to
+		the epoch no matter what timezone it is given, so a whole number
+		of days is expressed in DAY units instead - otherwise a daily bar
+		for a branch three hours ahead of UTC holds the last three hours
+		of the day before, and today's data lands on yesterday.
+	"""
+	if interval % 86400 == 0:
+		days = interval // 86400
+		return (
+			f"toStartOfInterval({column}, INTERVAL {days} DAY, '{tz}')"
+		)
+	return f'toStartOfInterval({column}, INTERVAL {interval} SECOND)'
+
+
+def _fill(window: Window, interval: int, tz: str) -> str:
 	"""Zero-fills the empty buckets of a grouped series.
 
 	Args:
 		window: The range being asked for.
 		interval: The bucket size, in seconds.
+		tz: An IANA timezone name, for whole-day alignment.
 
 	Returns:
 		A `WITH FILL` clause. Without it a bucket in which nobody was
@@ -110,10 +134,10 @@ def _fill(window: Window, interval: int) -> str:
 	"""
 	# The bounds are cast to DateTime because toStartOfInterval returns one:
 	# a DateTime64 here is rejected outright as an incompatible fill type.
+	start = bucket_expr('{start:DateTime64(3)}', interval, tz)
 	return (
 		' WITH FILL'
-		" FROM toDateTime(toStartOfInterval({start:DateTime64(3)},"
-		f" INTERVAL {interval} SECOND), 'UTC')"
+		f" FROM toDateTime({start}, 'UTC')"
 		" TO toDateTime({end:DateTime64(3)}, 'UTC')"
 		f' STEP INTERVAL {interval} SECOND'
 	)
@@ -124,6 +148,7 @@ def occupancy(
 	zone: config.Zone,
 	window: Window,
 	interval: int,
+	tz: str = 'UTC',
 ) -> list[dict]:
 	"""Counts how many people stood in a zone, over time.
 
@@ -132,6 +157,8 @@ def occupancy(
 		zone: The area to count inside.
 		window: The range to count over.
 		interval: Bucket size in seconds.
+		tz: An IANA timezone name, so a daily bucket starts at the
+			branch's midnight rather than at UTC's.
 
 	Returns:
 		One entry per bucket: the mean number of people present, the peak,
@@ -152,7 +179,7 @@ def occupancy(
 		" toDateTime({end:DateTime64(3)}, 'UTC'))))"
 	)
 	sql = f"""
-		SELECT toStartOfInterval(sec, INTERVAL {interval} SECOND) AS bucket,
+		SELECT {bucket_expr('sec', interval, tz)} AS bucket,
 		       sum(present) / {covered} AS mean,
 		       max(present) AS peak,
 		       {covered} AS covered
@@ -168,7 +195,7 @@ def occupancy(
 			GROUP BY sec
 		)
 		GROUP BY bucket
-		ORDER BY bucket{_fill(window, interval)}
+		ORDER BY bucket{_fill(window, interval, tz)}
 	"""
 	rows = client.query(sql, parameters=window.params()).result_rows
 	return [
@@ -229,6 +256,7 @@ def dwell(
 	window: Window,
 	edges: Sequence[int],
 	interval: int,
+	tz: str = 'UTC',
 ) -> dict:
 	"""Measures how long each visit to a zone lasted.
 
@@ -239,6 +267,7 @@ def dwell(
 		edges: Histogram bucket lower bounds, in seconds, ascending. A 0
 			edge is prepended when the caller does not supply one.
 		interval: Bucket size for the over-time series, in seconds.
+		tz: An IANA timezone name, for whole-day bucket alignment.
 
 	Returns:
 		Per-part statistics, a histogram and a time series, all in
@@ -271,11 +300,11 @@ def dwell(
 	# joined the queue at 3pm.
 	over_time = client.query(
 		f"""
-		SELECT toStartOfInterval(started, INTERVAL {interval} SECOND) AS bucket,
+		SELECT {bucket_expr('started', interval, tz)} AS bucket,
 		       count() AS visits, avg(seconds) AS mean
 		FROM ({visits_sql})
 		GROUP BY bucket
-		ORDER BY bucket{_fill(window, interval)}
+		ORDER BY bucket{_fill(window, interval, tz)}
 		""",
 		parameters=window.params(),
 	).result_rows
@@ -448,6 +477,7 @@ def footfall(
 	line: config.Line,
 	window: Window,
 	interval: int,
+	tz: str = 'UTC',
 ) -> list[dict]:
 	"""Counts people crossing a counting line, in each direction.
 
@@ -456,6 +486,7 @@ def footfall(
 		line: The two parallel lines to count across.
 		window: The range to count over.
 		interval: Bucket size in seconds.
+		tz: An IANA timezone name, for whole-day bucket alignment.
 
 	Returns:
 		One entry per bucket, with an `in` and an `out` count.
@@ -474,8 +505,8 @@ def footfall(
 	sessionisation `_visits_sql` does.
 	"""
 	sql = f"""
-		SELECT toStartOfInterval(greatest(t_outer, t_inner),
-		                         INTERVAL {interval} SECOND) AS bucket,
+		SELECT {bucket_expr('greatest(t_outer, t_inner)', interval, tz)}
+		           AS bucket,
 		       countIf(t_inner > t_outer) AS entered,
 		       countIf(t_outer > t_inner) AS exited
 		FROM (
@@ -489,7 +520,7 @@ def footfall(
 			HAVING n_outer > 0 AND n_inner > 0
 		)
 		GROUP BY bucket
-		ORDER BY bucket{_fill(window, interval)}
+		ORDER BY bucket{_fill(window, interval, tz)}
 	"""
 	rows = client.query(sql, parameters=window.params()).result_rows
 	return [

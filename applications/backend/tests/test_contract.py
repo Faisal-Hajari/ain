@@ -437,3 +437,64 @@ def test_a_split_stat_group_is_evaluated_over_its_first_zone(monkeypatch):
 	assert live.breaches(spec, 'above', 40, 'today') == 0
 	assert sent['zone'] == 'indoor'
 	assert sent['threshold'] == 40
+
+
+def test_the_overlay_speaks_the_wire_contract_not_the_services(monkeypatch):
+	"""snake_case in, camelCase out.
+
+	The analytics service returns `track_id`; every other field on this
+	wire is camelCase and the frontend reads `trackId`. Passing the body
+	through verbatim is a box labelled "person undefined" on every tile.
+	"""
+	body = {
+		'camera': '03',
+		'start': '2026-09-06T21:00:00+00:00',
+		'end': '2026-09-06T21:00:05+00:00',
+		'frames': [
+			{
+				'ts': '2026-09-06T21:00:00.100+00:00',
+				'objects': [
+					{
+						'track_id': 918, 'label': 'person',
+						'xc': 0.41, 'yc': 0.62, 'w': 0.08, 'h': 0.31,
+					}
+				],
+			}
+		],
+	}
+	monkeypatch.setattr(main.analytics, 'get', lambda path, params: body)
+	client = fastapi.testclient.TestClient(main.app)
+	payload = client.get('/api/overlay', params={'camera': '03'}).json()
+	obj = payload['frames'][0]['objects'][0]
+	assert obj['trackId'] == 918
+	assert 'track_id' not in obj
+
+
+def test_zones_come_back_shaped_for_the_renderer(monkeypatch):
+	body = {
+		'zones': [
+			{
+				'name': 'queue',
+				'kind': 'polygon',
+				'parts': [
+					{'camera': '12', 'name': None, 'points': [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]]}
+				],
+			}
+		],
+		'lines': [],
+	}
+	monkeypatch.setattr(main.analytics, 'get', lambda path, params: body)
+	client = fastapi.testclient.TestClient(main.app)
+	payload = client.get('/api/zones').json()
+	assert payload['zones'][0]['kind'] == 'polygon'
+	assert payload['zones'][0]['parts'][0]['camera'] == '12'
+	# Absent rather than null, matching what the TypeScript's `?:` means.
+	assert 'name' not in payload['zones'][0]['parts'][0]
+
+
+def test_no_analytics_service_means_no_zones_rather_than_an_error(monkeypatch):
+	monkeypatch.setattr(main.analytics, 'get', lambda path, params: None)
+	client = fastapi.testclient.TestClient(main.app)
+	response = client.get('/api/zones')
+	assert response.status_code == 200
+	assert response.json() == {'zones': [], 'lines': []}

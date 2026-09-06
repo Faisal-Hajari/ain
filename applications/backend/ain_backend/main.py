@@ -138,8 +138,8 @@ def read_instances(element_id: str, scope: Scope) -> models.InstanceLog:
 		) from error
 
 
-@app.get('/api/zones')
-def read_zones() -> dict:
+@app.get('/api/zones', response_model_exclude_none=True)
+def read_zones() -> models.ZonesResponse:
 	"""Returns the zone and line shapes drawn over the camera tiles.
 
 	Returns:
@@ -153,13 +153,14 @@ def read_zones() -> dict:
 		fastapi.HTTPException: Never; an absent service is empty, not an
 			error.
 	"""
-	return analytics.get('/zones', {}) or {'zones': [], 'lines': []}
+	body = analytics.get('/zones', {}) or {'zones': [], 'lines': []}
+	return models.ZonesResponse.model_validate(body)
 
 
-@app.get('/api/overlay')
+@app.get('/api/overlay', response_model_exclude_none=True)
 def read_overlay(
 	camera: str, start: str | None = None, end: str | None = None
-) -> dict:
+) -> models.OverlayResponse:
 	"""Returns the boxes to draw over one camera, for one short window.
 
 	Args:
@@ -185,7 +186,7 @@ def read_overlay(
 		raise fastapi.HTTPException(
 			status_code=503, detail='no detections available'
 		)
-	return body
+	return models.OverlayResponse.model_validate(body)
 
 
 @app.get('/api/clips/{event_id}.mp4')
@@ -217,8 +218,21 @@ def read_clip(
 		raise fastapi.HTTPException(
 			status_code=404, detail='no clip for that window'
 		)
+	def chunks():
+		"""Yields the upstream body in blocks.
+
+		Iterating an HTTP response directly yields LINES, which for a
+		binary mp4 means a chunk per stray 0x0a - hundreds of thousands
+		of them for a megabyte of video.
+		"""
+		try:
+			while block := upstream.read(64 * 1024):
+				yield block
+		finally:
+			upstream.close()
+
 	return responses.StreamingResponse(
-		upstream, media_type='video/mp4',
+		chunks(), media_type='video/mp4',
 		headers={
 			'Content-Disposition': f'inline; filename="{event_id}.mp4"'
 		},

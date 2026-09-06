@@ -149,6 +149,8 @@ def _series_events(
 	for_seconds: int,
 	window: queries.Window,
 	kind: str,
+	interval: int | None,
+	tz: str,
 ) -> list[Event]:
 	"""Evaluates a bucketed metric against a sustained threshold.
 
@@ -161,6 +163,12 @@ def _series_events(
 		for_seconds: How long the breach must hold to count.
 		window: The range to evaluate over.
 		kind: The event type to label the results with.
+		interval: Bucket size in seconds, or None for the default. A
+			threshold is authored in the units its metric is read in, so
+			a rate like footfall - people per hour - has to be evaluated
+			on hourly buckets or an hour's number is compared to half a
+			minute's.
+		tz: An IANA timezone name, for whole-day bucket alignment.
 
 	Returns:
 		One event per sustained run.
@@ -169,16 +177,15 @@ def _series_events(
 		config.UnknownZoneError: The target names nothing.
 	"""
 	settings = config.get()
-	interval = max(
-		_EVENT_INTERVAL, queries.bucket_seconds(window, _EVENT_INTERVAL)
-	)
+	requested = interval or _EVENT_INTERVAL
+	interval = max(requested, queries.bucket_seconds(window, requested))
 	if metric == 'occupancy':
 		zone = settings.zone(target)
-		buckets = queries.occupancy(client, zone, window, interval)
+		buckets = queries.occupancy(client, zone, window, interval, tz)
 		key, cameras, geometry = 'mean', zone.cameras, zone.geometry()
 	else:
 		line = settings.line(target)
-		buckets = queries.footfall(client, line, window, interval)
+		buckets = queries.footfall(client, line, window, interval, tz)
 		key = 'in'
 		cameras, geometry = (line.camera,), line.geometry()
 
@@ -285,6 +292,8 @@ def evaluate(
 	window: queries.Window,
 	for_seconds: int = 0,
 	kind: str = 'threshold',
+	interval: int | None = None,
+	tz: str = 'UTC',
 ) -> list[Event]:
 	"""Runs one alert rule over one window.
 
@@ -299,6 +308,9 @@ def evaluate(
 		for_seconds: How long a series breach must hold. Ignored for
 			visit metrics, where the visit's own length is the test.
 		kind: The event type to label the results with.
+		interval: Bucket size for a series metric, or None for the
+			default. Ignored by a visit metric.
+		tz: An IANA timezone name, for whole-day bucket alignment.
 
 	Returns:
 		The occurrences, oldest first.
@@ -310,7 +322,7 @@ def evaluate(
 	if metric in SERIES_METRICS:
 		return _series_events(
 			client, metric, target, comparator, threshold, for_seconds,
-			window, kind,
+			window, kind, interval, tz,
 		)
 	if metric in VISIT_METRICS:
 		return _visit_events(client, target, comparator, threshold, window, kind)

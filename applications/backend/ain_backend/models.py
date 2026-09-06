@@ -245,6 +245,62 @@ class InstanceLog(Model):
 	instances: list[Instance]
 
 
+class OverlayObject(Model):
+	"""One detected object, in coordinates normalised against its frame."""
+
+	track_id: int
+	label: str
+	xc: float
+	yc: float
+	w: float
+	h: float
+
+
+class OverlayFrame(Model):
+	"""Every object seen at one instant."""
+
+	ts: str
+	objects: list[OverlayObject]
+
+
+class OverlayResponse(Model):
+	"""One window of detections for one camera.
+
+	Passed through from the analytics service, but through these models
+	rather than verbatim: that service speaks snake_case and this wire is
+	camelCase, and `track_id` reaching the browser as-is is a box label
+	reading "person undefined".
+	"""
+
+	camera: str
+	start: str
+	end: str
+	frames: list[OverlayFrame]
+
+
+class GeometryPart(Model):
+	"""One camera's share of a zone or a counting line."""
+
+	camera: str
+	name: str | None = None
+	points: list[list[float]]
+
+
+class NamedGeometry(Model):
+	"""A zone or a line, and the shapes that make it up."""
+
+	name: str
+	kind: Literal['polygon', 'line']
+	parts: list[GeometryPart]
+
+
+class ZonesResponse(Model):
+	"""Every zone and line, as configured."""
+
+	zones: list[NamedGeometry]
+	lines: list[NamedGeometry]
+
+
 class AlertMonitor(Model):
 	"""A value an alert rule can be built on."""
 

@@ -14,7 +14,9 @@ want the GPU, and the GPU is running inference.
 
 import bisect
 import datetime
+import os
 import re
+import threading
 import logging
 import os
 import pathlib
@@ -40,6 +42,17 @@ DEFAULT_SECONDS = 20
 
 _BOX_COLOR = (64, 220, 64)
 _TEXT_COLOR = (16, 16, 16)
+
+# Rendering a clip decodes, redraws and re-encodes on the CPU, and the same
+# host is running ten transcodes and a GPU pipeline. Two at a time keeps a
+# burst of alert clicks from starving the thing the clips are of.
+_RENDERS = threading.Semaphore(
+	int(os.environ.get('AIN_CLIP_CONCURRENCY', '2'))
+)
+
+# Oldest clips are dropped past this. They are a cache of something that can
+# always be rendered again, not a store.
+_CACHE_LIMIT = int(os.environ.get('AIN_CLIP_CACHE_FILES', '200'))
 
 
 # An event id becomes a filename, so it is allowed to be exactly what
@@ -276,6 +289,10 @@ def render(
 	Raises:
 		ClipError: The id is not one, there is no recording for the
 			window, or it will not decode.
+
+	A clip is rendered once and cached under its event id. Concurrent
+	renders are capped, and the cache is pruned: it holds copies of
+	something that can always be made again.
 	"""
 	if not _ID.match(event_id):
 		raise ClipError(f'not an event id: {event_id!r}')
@@ -287,10 +304,33 @@ def render(
 	stream = config.get().stream(camera)
 	if stream is None:
 		raise ClipError(f'unknown camera: {camera}')
-	raw = _CACHE / f'{event_id}.raw.mp4'
-	try:
-		_fetch(stream, scope, raw)
-		_encode(raw, target, _boxes_by_second(client, camera, scope))
-	finally:
-		raw.unlink(missing_ok=True)
+
+	# Everything is written to names of this attempt's own and moved into
+	# place at the end. Two requests for the same clip would otherwise have
+	# one serving the other's half-written file, and a render that failed
+	# would leave a broken mp4 that the size check above accepts forever.
+	unique = f'{event_id}.{os.getpid()}.{threading.get_ident()}'
+	raw = _CACHE / f'{unique}.raw.mp4'
+	partial = _CACHE / f'{unique}.part.mp4'
+	with _RENDERS:
+		if target.exists() and target.stat().st_size > 0:
+			return target
+		try:
+			_fetch(stream, scope, raw)
+			_encode(raw, partial, _boxes_by_second(client, camera, scope))
+			os.replace(partial, target)
+		finally:
+			raw.unlink(missing_ok=True)
+			partial.unlink(missing_ok=True)
+	_prune()
 	return target
+
+
+def _prune() -> None:
+	"""Drops the oldest clips once the cache grows past its limit."""
+	clips = sorted(
+		(path for path in _CACHE.glob('*.mp4') if '.part.' not in path.name),
+		key=lambda path: path.stat().st_mtime,
+	)
+	for path in clips[: max(0, len(clips) - _CACHE_LIMIT)]:
+		path.unlink(missing_ok=True)

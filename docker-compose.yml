@@ -63,6 +63,11 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # A buffer between the GPU and ClickHouse, not a store: ClickHouse is
+      # the store. The default seven days of ~400 messages/sec would sit in
+      # the container's writable layer, which no volume backs.
+      KAFKA_LOG_RETENTION_HOURS: 2
+      KAFKA_LOG_RETENTION_BYTES: 2147483648
     healthcheck:
       test: ["CMD", "/opt/kafka/bin/kafka-topics.sh",
              "--bootstrap-server", "localhost:9092", "--list"]

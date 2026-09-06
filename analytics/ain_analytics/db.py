@@ -146,14 +146,30 @@ def connect(retries: int = 30, delay: float = 2.0) -> ch_client.Client:
 
 
 def apply_schema(client: ch_client.Client) -> None:
-	"""Creates the tables, projection and view if they are missing."""
+	"""Creates the tables, projection and view if they are missing.
+
+	Args:
+		client: A connected client.
+
+	MATERIALIZE is only issued when the projection was not already there.
+	It is a mutation over every existing part, and running it on each
+	process start would queue one per restart against a table holding a
+	month of detections.
+	"""
+	existed = bool(
+		client.query(
+			'SELECT 1 FROM system.projections '
+			'WHERE table = %(table)s AND name = %(name)s '
+			'AND database = currentDatabase()',
+			parameters={'table': TABLE, 'name': 'by_track'},
+		).result_rows
+	)
 	for statement in _SCHEMA:
 		client.command(statement)
-	# MATERIALIZE has to be separate: it rewrites existing parts, and on an
-	# empty table it is a no-op rather than an error.
-	client.command(
-		f'ALTER TABLE {TABLE} MATERIALIZE PROJECTION IF EXISTS by_track'
-	)
+	if not existed:
+		client.command(
+			f'ALTER TABLE {TABLE} MATERIALIZE PROJECTION IF EXISTS by_track'
+		)
 
 
 _migrated = False

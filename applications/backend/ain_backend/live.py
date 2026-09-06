@@ -35,12 +35,19 @@ _NO_VALUE = '—'
 # series draws, so a card does not change shape when it switches to real
 # data: hours across today, days across a week or a month.
 _INTERVALS = {'today': 3600, '7d': 86400, '30d': 86400}
-# Realtime cards want a finer trend than the chart granularity.
-_LIVE_INTERVALS = {'today': 300, '7d': 3600, '30d': 86400}
+# Realtime cards want a finer trend than the chart granularity - but only
+# where the axis can tell the buckets apart. A week is labelled by weekday,
+# so hourly buckets there would stack twenty-four points on one x value.
+_LIVE_INTERVALS = {'today': 300, '7d': 86400, '30d': 86400}
 
 # Dwell histogram edges, in seconds: 0-10, 10-20, 20-30, 30-45, 45-60, 60+
 # minutes, matching the buckets the generated histogram draws.
 _DWELL_EDGES = (0, 600, 1200, 1800, 2700, 3600)
+
+# Daily buckets are aligned to the branch's midnight, not to UTC's. Riyadh is
+# three hours ahead, so a UTC-aligned day puts the first three hours of every
+# local day on the previous bar - and today's data on yesterday's.
+_TZ = str(catalogue.BRANCH_TIMEZONE)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -160,7 +167,7 @@ def _occupancy(context, source: catalogue.Source, params: dict) -> Built | None:
 		return _occupancy_split(context, source, params, interval)
 
 	body = analytics.get(
-		'/occupancy', {**params, **source.query(), 'interval': interval}
+		'/occupancy', {**params, **source.query(), 'interval': interval, 'tz': _TZ}
 	)
 	if body is None:
 		return None
@@ -196,7 +203,7 @@ def _occupancy_split(
 	bodies = {}
 	for stat_id, zone in source.split:
 		body = analytics.get(
-			'/occupancy', {**params, 'zone': zone, 'interval': interval}
+			'/occupancy', {**params, 'zone': zone, 'interval': interval, 'tz': _TZ}
 		)
 		if body is None:
 			return None
@@ -278,7 +285,7 @@ def _footfall(context, source: catalogue.Source, params: dict) -> Built | None:
 	"""
 	interval = _INTERVALS[context.range_key]
 	body = analytics.get(
-		'/footfall', {**params, **source.query(), 'interval': interval}
+		'/footfall', {**params, **source.query(), 'interval': interval, 'tz': _TZ}
 	)
 	if body is None:
 		return None
@@ -324,6 +331,7 @@ def _dwell(context, source: catalogue.Source, params: dict) -> Built | None:
 			**source.query(),
 			'buckets': ','.join(str(edge) for edge in _DWELL_EDGES),
 			'interval': interval,
+			'tz': _TZ,
 		},
 	)
 	if body is None:
@@ -404,7 +412,9 @@ def _events(context, source: catalogue.Source, params: dict) -> Built | None:
 	Returns:
 		The payload, or None if the service had nothing.
 	"""
-	body = analytics.get(f'/events{source.route}', {**params, **source.query()})
+	body = analytics.get(
+		f'/events{source.route}', {**params, **source.query(), 'tz': _TZ}
+	)
 	if body is None:
 		return None
 
@@ -454,6 +464,16 @@ def instances(context) -> models.InstanceLog | None:
 	spec = context.spec
 	if spec.source is None or not analytics.configured():
 		return None
+	if spec.source.kind is _Kind.PPE:
+		# The card reads "-" because nothing measures this. A drilldown of
+		# generated violations under it would be the same false claim the
+		# dash exists to avoid, told at greater length.
+		return models.InstanceLog(
+			element_id=spec.id,
+			title=context.text(spec.title),
+			total=0,
+			instances=[],
+		)
 	params = analytics.window(
 		context.range_key, catalogue.today(), catalogue.BRANCH_TIMEZONE
 	)
@@ -548,12 +568,10 @@ def breaches(
 	)
 	# Durations are minutes everywhere in the catalogue, because that is
 	# what formatting.format_duration reads; the analytics service measures
-	# them in seconds.
-	scaled = (
-		threshold * 60
-		if spec.value_format is formatting.ValueFormat.DURATION
-		else threshold
-	)
+	# them in seconds. Keyed on the METRIC, not on value_format: dwell time
+	# per table is a duration that happens to print as a plain count, and
+	# scaling on the format would send its threshold sixty times too small.
+	scaled = threshold * 60 if metric == 'dwell' else threshold
 	body = analytics.get(
 		'/events',
 		{
@@ -563,6 +581,13 @@ def breaches(
 			'comparator': comparator,
 			'threshold': scaled,
 			'type': 'rule',
+			# The threshold came from the monitor's own 30-day average, so
+			# it is in the units that monitor is read in. Footfall is a
+			# rate - people per hour - and evaluating it against a
+			# thirty-second bucket would compare an hour's number to half
+			# a minute's.
+			'interval': _INTERVALS[range_key] if metric == 'footfall' else None,
+			'tz': str(catalogue.BRANCH_TIMEZONE),
 		},
 	)
 	return body['count'] if body else None
