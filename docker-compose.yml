@@ -22,6 +22,62 @@ services:
       AIN_CORS_ORIGINS: "http://localhost:5173,http://localhost:3000"
     restart: unless-stopped
 
+  # Single-node KRaft broker - no ZooKeeper, no volume. The topic is the seam
+  # analytics workers publish detections to; nothing outside this network
+  # speaks to it, so the port stays unpublished.
+  kafka:
+    image: apache/kafka:4.0.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-topics.sh",
+             "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  # Nothing reads it yet: no schema, and the API does not connect. This is the
+  # server and its data directory, ready for both.
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.3
+    environment:
+      # The image refuses network access to `default` until a user is named,
+      # so the stack gets one. A dev password on a compose network; a real
+      # deployment gives the API its own read-only grant.
+      CLICKHOUSE_USER: ain
+      CLICKHOUSE_PASSWORD: ain
+    ports:
+      - "8123:8123"
+    volumes:
+      # A bind mount rather than a named volume, so the data sits in the repo
+      # where it can be inspected. `docker compose down -v` does not clear a
+      # bind mount: delete clickhouse-data/ to start over. The server writes
+      # as its own uid, so that delete needs sudo.
+      - ./clickhouse-data:/var/lib/clickhouse
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--user", "ain", "--password", "ain",
+             "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
   frontend:
     build: ./applications/frontend
     image: ain-frontend:dev
