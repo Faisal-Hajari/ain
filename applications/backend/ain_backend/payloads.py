@@ -19,12 +19,20 @@ from ain_backend import catalogue
 from ain_backend import formatting
 from ain_backend import i18n
 from ain_backend import models
+from ain_backend import store
 
 _DURATION = formatting.ValueFormat.DURATION
 
 _HOURS = tuple(f'{hour:02d}' for hour in range(8, 22))
 _DWELL_BUCKETS = ('0-10', '10-20', '20-30', '30-45', '45-60', '60+')
 _MONTH_DAYS = 30
+
+# How far back an instance log reads, per resolved range key.
+_RANGE_HOURS = {'today': 24, '7d': 24 * 7, '30d': 24 * 30}
+
+# Severities as they arrive on the wire. A producer that invents one is
+# read as "no judgement" rather than failing the whole card.
+_SEVERITIES = {member.value: member for member in models.Severity}
 _OFFLINE_CHANCE = 0.12
 _TREND_POINTS = 12
 
@@ -507,16 +515,86 @@ def build_element(
 	)
 
 
+def _ingested_instances(
+	context: _Context, branch: str, venue: str
+) -> list[models.Instance]:
+	"""Reads one card's occurrences out of the event store.
+
+	Args:
+		context: The element being drilled into.
+		branch: The active branch filter.
+		venue: The active venue filter.
+
+	Returns:
+		The stored occurrences, newest first. An empty list means
+		nothing has been ingested for this card, which is the caller's
+		signal to generate one instead.
+	"""
+	rows = store.recent_events(
+		context.spec.id, branch, venue, _RANGE_HOURS[context.range_key]
+	)
+	return [
+		models.Instance(
+			id=f'{context.spec.id}-{index}',
+			timestamp=row['timestamp'],
+			camera=_camera_label(row['camera_id'], context.locale),
+			# Producers with nothing specific to say leave this empty;
+			# the element's own description is the only text that
+			# exists in both languages, so it stands in.
+			detail=(
+				row['detail'] or context.text(context.spec.description)
+			),
+			severity=_SEVERITIES.get(row['severity']),
+			clip_url=row['clip_url'] or None,
+		)
+		for index, row in enumerate(rows)
+	]
+
+
+def _generated_instances(context: _Context) -> list[models.Instance]:
+	"""Invents a plausible log for a card with nothing ingested."""
+	rand = context.rand
+	cameras = context.spec.cameras or ('03',)
+	instances = [
+		models.Instance(
+			id=f'{context.spec.id}-{index}',
+			timestamp=(
+				f'{rand.randint(8, 21):02d}:{rand.randint(0, 59):02d}'
+			),
+			camera=_camera_label(
+				cameras[index % len(cameras)], context.locale
+			),
+			detail=context.text(context.spec.description),
+			severity=formatting.rolled_severity(rand),
+			clip_url=f'/api/clips/{context.spec.id}/{index}.mp4',
+		)
+		for index in range(rand.randint(3, 12))
+	]
+	instances.sort(key=lambda entry: entry.timestamp, reverse=True)
+	return instances
+
+
 def build_instance_log(
-	element_id: str, seed_key: str, locale: i18n.Locale, range_value: str
+	element_id: str,
+	seed_key: str,
+	locale: i18n.Locale,
+	range_value: str,
+	branch: str = '',
+	venue: str = '',
 ) -> models.InstanceLog:
 	"""Builds the occurrences behind an alert card.
+
+	Ingested events win when there are any; otherwise the log is
+	generated, so the dashboard reads the same with or without the
+	Kafka and ClickHouse half of the stack running.
 
 	Args:
 		element_id: The catalogue id from the request path.
 		seed_key: The filters, language excluded, as a stable key.
 		locale: The requested language.
 		range_value: The raw `range` filter.
+		branch: The active branch filter.
+		venue: The active venue filter.
 
 	Returns:
 		The log, newest first. An element with nothing to show returns
@@ -527,29 +605,13 @@ def build_instance_log(
 	"""
 	spec = _spec_or_raise(element_id)
 	context = _context(spec, seed_key, locale, range_value, 'instances')
-	rand = context.rand
-	total = rand.randint(3, 12)
-	cameras = spec.cameras or ('03',)
-	instances = [
-		models.Instance(
-			id=f'{spec.id}-{index}',
-			timestamp=(
-				f'{rand.randint(8, 21):02d}:{rand.randint(0, 59):02d}'
-			),
-			camera=_camera_label(
-				cameras[index % len(cameras)], locale
-			),
-			detail=context.text(spec.description),
-			severity=formatting.rolled_severity(rand),
-			clip_url=f'/api/clips/{spec.id}/{index}.mp4',
-		)
-		for index in range(total)
-	]
-	instances.sort(key=lambda entry: entry.timestamp, reverse=True)
+	instances = _ingested_instances(context, branch, venue)
+	if not instances:
+		instances = _generated_instances(context)
 	return models.InstanceLog(
 		element_id=spec.id,
 		title=context.text(spec.title),
-		total=total,
+		total=len(instances),
 		instances=instances,
 	)
 

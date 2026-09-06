@@ -18,6 +18,7 @@ from ain_backend import catalogue
 from ain_backend import i18n
 from ain_backend import models
 from ain_backend import payloads
+from ain_backend import store
 
 # The filters the frontend stacks onto every data request. UI state
 # (`expanded`, `settings`, ...) also rides in the URL but is not sent,
@@ -74,8 +75,14 @@ app.add_middleware(
 
 @app.get('/health')
 def health() -> dict[str, str]:
-	"""Reports that the service is up, and what is behind it."""
-	return {'status': 'ok', 'source': 'dummy'}
+	"""Reports that the service is up, and what is behind it.
+
+	Returns:
+		`source` is `clickhouse` once events have been ingested and
+		`dummy` while the payloads are still generated.
+	"""
+	source = 'clickhouse' if store.has_events() else 'dummy'
+	return {'status': 'ok', 'source': source}
 
 
 @app.get('/api/dashboard/config', response_model_exclude_none=True)
@@ -126,7 +133,12 @@ def read_instances(element_id: str, scope: Scope) -> models.InstanceLog:
 	"""
 	try:
 		return payloads.build_instance_log(
-			element_id, scope.seed_key, scope.locale, scope.range
+			element_id,
+			scope.seed_key,
+			scope.locale,
+			scope.range,
+			scope.branch,
+			scope.venue,
 		)
 	except payloads.UnknownElementError as error:
 		raise fastapi.HTTPException(

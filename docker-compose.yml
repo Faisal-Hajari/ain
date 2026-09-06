@@ -20,6 +20,66 @@ services:
       # nginx proxies /api from the same origin, so the browser never makes a
       # cross-origin call; these are for hitting the API from a dev server.
       AIN_CORS_ORIGINS: "http://localhost:5173,http://localhost:3000"
+      # Reads only, and best-effort: unset the URL and every card falls back
+      # to the generated payloads.
+      AIN_CLICKHOUSE_URL: "http://clickhouse:8123"
+      AIN_CLICKHOUSE_USER: "ain"
+      AIN_CLICKHOUSE_PASSWORD: "ain"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Single-node KRaft broker - no ZooKeeper, no volume. The topic is the seam
+  # analytics workers publish detections to; nothing outside this network
+  # speaks to it, so the port stays unpublished.
+  kafka:
+    image: apache/kafka:4.0.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-topics.sh",
+             "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  # No schema yet: until one creates `ain.events` the backend's reads fail
+  # closed and every card falls back to its generated payload.
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.3
+    environment:
+      # The image refuses network access to `default` until a user is named,
+      # so the stack gets one. A dev password on a compose network; a real
+      # deployment gives the API its own read-only grant.
+      CLICKHOUSE_USER: ain
+      CLICKHOUSE_PASSWORD: ain
+    ports:
+      - "8123:8123"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--user", "ain", "--password", "ain",
+             "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     restart: unless-stopped
 
   frontend:
@@ -56,3 +116,6 @@ services:
       - ./videos/cctv/cam13_2026-07-27_19-55-22.mp4:/videos/cam13.mp4:ro
       - ./videos/cctv/cam15_2026-07-27_19-55-22.mp4:/videos/cam15.mp4:ro
     restart: unless-stopped
+
+volumes:
+  clickhouse-data:
