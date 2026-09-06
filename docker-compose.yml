@@ -69,7 +69,11 @@ services:
     ports:
       - "8123:8123"
     volumes:
-      - clickhouse-data:/var/lib/clickhouse
+      # A bind mount rather than a named volume, so the data sits in the repo
+      # where it can be inspected. `docker compose down -v` does not clear a
+      # bind mount: delete clickhouse-data/ to start over. The server writes
+      # as its own uid, so that delete needs sudo.
+      - ./clickhouse-data:/var/lib/clickhouse
     depends_on:
       kafka:
         condition: service_healthy
@@ -116,6 +120,3 @@ services:
       - ./videos/cctv/cam13_2026-07-27_19-55-22.mp4:/videos/cam13.mp4:ro
       - ./videos/cctv/cam15_2026-07-27_19-55-22.mp4:/videos/cam15.mp4:ro
     restart: unless-stopped
-
-volumes:
-  clickhouse-data:
