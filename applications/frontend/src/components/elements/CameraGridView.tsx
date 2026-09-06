@@ -60,7 +60,12 @@ export function CameraGridView({ data }: { data: CameraGridPayload }) {
             <li key={feed.id}>
               <Card className="relative overflow-hidden" interactive>
                 <div className="relative aspect-video bg-canvas">
-                  <CameraPlayer feed={feed} fit="cover" showBoxes={showBoxes} showZones={showZones} />
+                  {/* Not while the dialog is showing this same camera: two
+                      players on one feed is two media engines and two
+                      overlay poll loops, for a tile nobody can see. */}
+                  {zoom.value === feed.id ? null : (
+                    <CameraPlayer feed={feed} fit="cover" showBoxes={showBoxes} showZones={showZones} />
+                  )}
                   {/* Over the video, so it must not eat the clicks meant for it. */}
                   <span className="pointer-events-none absolute start-2 top-2">
                     <Chip severity={feed.status === 'online' ? 'ok' : 'critical'}>{feed.statusLabel}</Chip>
@@ -162,17 +167,24 @@ function CameraPlayer({
     const video = ref.current
     if (!video || !source) return
 
-    // Safari plays HLS itself. Every other browser needs the polyfill, which
-    // is imported here rather than at the top of the file so that the tabs
-    // with no camera on them never download it.
-    if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = source
-      return
-    }
-
     let cancelled = false
+    // hls.js first, native only where it cannot run - which in practice is
+    // Safari. Asking `canPlayType('application/vnd.apple.mpegurl')` first
+    // looks like the polite check and is a trap: Chromium answers 'maybe',
+    // which is truthy, so that branch is taken on a browser that cannot
+    // play HLS natively at all. Worse for this app than a black tile, it
+    // means hls.js never loads, and hls.js is the only thing that knows
+    // `playingDate` - the wall-clock instant of the frame on screen, which
+    // is the whole basis of lining a detection box up with it.
+    //
+    // The import is here rather than at the top of the file so that the
+    // tabs with no camera on them never download it.
     void import('hls.js').then(({ default: HlsPlayer }) => {
       if (cancelled) return
+      if (!HlsPlayer.isSupported()) {
+        video.src = source
+        return
+      }
       const instance = new HlsPlayer()
       instance.loadSource(source)
       instance.attachMedia(video)
@@ -196,13 +208,21 @@ function CameraPlayer({
 
   return (
     <>
+      {/* Absolutely positioned, like the canvas over it. A `size-full` video
+          is still a flex item, and its min-content contribution - the
+          camera's own 1280x1440 for half of these - beats the tile's
+          aspect-video, so the portrait cameras stretched their cards and
+          object-cover never cropped anything. Out of flow it cannot. */}
       <video
         ref={ref}
         muted
         autoPlay
         playsInline
         disablePictureInPicture
-        className={clsx('size-full', fit === 'cover' ? 'object-cover' : 'object-contain')}
+        className={clsx(
+          'absolute inset-0 size-full',
+          fit === 'cover' ? 'object-cover' : 'object-contain',
+        )}
       />
       {showBoxes || showZones ? (
         <CameraOverlay
