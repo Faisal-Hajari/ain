@@ -4,6 +4,8 @@ The frontend has no fallbacks, so these assert the shapes it indexes
 into rather than merely that a route answers.
 """
 
+import dataclasses
+
 import fastapi.testclient
 import pytest
 
@@ -13,6 +15,7 @@ from ain_backend import i18n
 from ain_backend import live
 from ain_backend import main
 from ain_backend import models
+from ain_backend import payloads
 from ain_backend import store
 
 FILTERS = {'branch': 'olaya', 'venue': 'cafe', 'range': 'today'}
@@ -498,3 +501,117 @@ def test_no_analytics_service_means_no_zones_rather_than_an_error(monkeypatch):
 	response = client.get('/api/zones')
 	assert response.status_code == 200
 	assert response.json() == {'zones': [], 'lines': []}
+
+
+def test_a_new_split_card_needs_only_its_own_elementspec(monkeypatch):
+	"""The whole point of the server-driven design.
+
+	A second split stat group - back-of-house against front - must be one
+	ElementSpec, so the labels ride on the spec rather than living in a
+	table somewhere downstream that would have to be edited too.
+	"""
+	spec = dataclasses.replace(
+		catalogue.ELEMENTS_BY_ID['live-occupancy'],
+		id='kitchen-split',
+		source=catalogue.Source(
+			kind=catalogue.SourceKind.OCCUPANCY,
+			split=(
+				('kitchen', 'kitchen', i18n.Text('Kitchen', 'المطبخ')),
+				('queue', 'queue', i18n.Text('Queue', 'الطابور')),
+			),
+		),
+	)
+	asked = []
+
+	def fake_get(path, params):
+		asked.append(params.get('zone'))
+		return {
+			'end': '2026-09-06T21:00:00+00:00',
+			'latest': 2,
+			'buckets': [
+				{'ts': '2026-09-06T20:00:00+00:00', 'mean': 2.0, 'peak': 3}
+			],
+		}
+
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(live.analytics, 'get', fake_get)
+	monkeypatch.setitem(catalogue.ELEMENTS_BY_ID, 'kitchen-split', spec)
+
+	built = payloads.build_element(
+		'kitchen-split', '', i18n.Locale.EN, 'today'
+	)
+	labels = [stat.label for stat in built.data.stats]
+	assert labels == ['Total', 'Kitchen', 'Queue']
+	assert asked == ['kitchen', 'queue']
+	assert [stat.value for stat in built.data.stats] == ['4', '2', '2']
+
+
+def test_a_multi_day_instance_log_labels_the_day(monkeypatch):
+	"""Over a week "09:15" happens seven times.
+
+	The rows are ordered on the instant either way; this is about a
+	reader being able to tell Tuesday's from Thursday's.
+	"""
+	body = {
+		'count': 2,
+		'events': [
+			{
+				'id': 'cong-1', 'start': '2026-09-05T09:15:00+00:00',
+				'end': '2026-09-05T09:20:00+00:00', 'cameras': ['03'],
+				'peak_value': 12, 'threshold': 8, 'comparator': 'above',
+			},
+			{
+				'id': 'cong-2', 'start': '2026-09-06T09:15:00+00:00',
+				'end': '2026-09-06T09:20:00+00:00', 'cameras': ['03'],
+				'peak_value': 20, 'threshold': 8, 'comparator': 'above',
+			},
+		],
+	}
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(live.analytics, 'get', lambda path, params: body)
+
+	log = payloads.build_instance_log(
+		'congestion-count', '', i18n.Locale.EN, '7d'
+	)
+	assert [entry.id for entry in log.instances] == ['cong-2', 'cong-1']
+	assert all('-' in entry.timestamp for entry in log.instances)
+
+	today = payloads.build_instance_log(
+		'congestion-count', '', i18n.Locale.EN, 'today'
+	)
+	assert all(len(entry.timestamp) == 5 for entry in today.instances)
+
+
+def test_a_ppe_card_shows_its_number_once_a_model_reports_one(monkeypatch):
+	"""The dash is for "not measured", not for "measured as zero"."""
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(
+		live.analytics,
+		'get',
+		lambda path, params: {'value': 3, 'status': 'ok'},
+	)
+	built = payloads.build_element(
+		'no-mask-count', '', i18n.Locale.EN, 'today'
+	)
+	assert built.data.value == '3'
+	assert built.data.severity is models.Severity.CRITICAL
+
+
+def test_a_ppe_card_with_no_model_shows_a_dash_not_a_zero(monkeypatch):
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(
+		live.analytics,
+		'get',
+		lambda path, params: {
+			'value': None,
+			'status': 'unavailable',
+			'reason': 'ppe_model_not_deployed',
+		},
+	)
+	built = payloads.build_element(
+		'no-mask-count', '', i18n.Locale.EN, 'today'
+	)
+	# Not "0": that would assert the kitchen was watched and found
+	# compliant, and severity is derived from the value.
+	assert built.data.value == live._NO_VALUE
+	assert built.data.severity is models.Severity.INFO

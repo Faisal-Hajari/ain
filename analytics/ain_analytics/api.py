@@ -189,11 +189,23 @@ def _line(name: str) -> config.Line:
 
 
 @app.get('/health')
-def health() -> dict:
-	"""Reports that the service is up and the database answers."""
+def health(response: fastapi.Response) -> dict:
+	"""Reports that the service is up and the database answers.
+
+	Args:
+		response: Used to answer 503 rather than 200 when the database
+			is unreachable. A container that reports itself healthy
+			while it cannot serve anything is a container nothing will
+			ever restart.
+
+	Returns:
+		The status, the newest detection stored, and what the config
+		declares.
+	"""
 	try:
 		latest = queries.latest_ts(db.client())
 	except Exception as error:  # noqa: BLE001 - reported, not raised
+		response.status_code = 503
 		return {'status': 'degraded', 'detail': str(error)}
 	return {
 		'status': 'ok',

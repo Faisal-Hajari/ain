@@ -201,17 +201,16 @@ def _occupancy_split(
 	re-identification to deduplicate somebody standing in two of them.
 	"""
 	bodies = {}
-	for stat_id, zone in source.split:
+	labels = {'total': i18n.TOTAL}
+	for stat_id, zone, label in source.split:
 		body = analytics.get(
-			'/occupancy', {**params, 'zone': zone, 'interval': interval, 'tz': _TZ}
+			'/occupancy',
+			{**params, 'zone': zone, 'interval': interval, 'tz': _TZ},
 		)
 		if body is None:
 			return None
 		bodies[stat_id] = body
-
-	labels = {
-		'total': i18n.TOTAL, 'indoor': i18n.INDOOR, 'outdoor': i18n.OUTDOOR,
-	}
+		labels[stat_id] = label
 	series_ids = ('total', *bodies)
 	length = min(len(body['buckets']) for body in bodies.values())
 	points: list[models.Point] = []
@@ -239,7 +238,7 @@ def _occupancy_split(
 	stats = [
 		models.Stat(
 			id='total',
-			label=context.text(labels['total']),
+			label=context.text(i18n.TOTAL),
 			value=context.format(total),
 			unit=context.unit(),
 			delta=formatting.delta_between(opening, total, context.is_alert),
@@ -481,20 +480,27 @@ def instances(context) -> models.InstanceLog | None:
 	if body is None:
 		return None
 
+	# Sorted on the instant, then labelled - not sorted on the label. Over
+	# a week's window "09:15" appears seven times and sorting the strings
+	# interleaves the days.
 	entries = []
-	for event in body['events']:
+	for event in sorted(body['events'], key=lambda e: e['start'], reverse=True):
 		camera = (event.get('cameras') or ['03'])[0]
+		moment = _moment(event['start'])
 		entries.append(
 			models.Instance(
 				id=event['id'],
-				timestamp=_moment(event['start']).strftime('%H:%M'),
+				timestamp=(
+					moment.strftime('%H:%M')
+					if context.range_key == 'today'
+					else moment.strftime('%m-%d %H:%M')
+				),
 				camera=f'{i18n.CAMERA.get(context.locale)} {camera}',
 				detail=context.text(spec.description),
 				severity=_event_severity(event),
 				clip_url=_clip_url(event, camera),
 			)
 		)
-	entries.sort(key=lambda entry: entry.timestamp, reverse=True)
 	return models.InstanceLog(
 		element_id=spec.id,
 		title=context.text(spec.title),
@@ -631,21 +637,35 @@ def _ppe(context, source: catalogue.Source, params: dict) -> Built | None:
 		params: Unused; PPE has no window.
 
 	Returns:
-		A card showing a dash, or None if the service was unreachable -
-		in which case the generated data fills in, which is the same
-		fallback every other element gets.
+		A card showing that number once a PPE model reports one, a dash
+		until then, or None if the service was unreachable - in which
+		case the generated data fills in, which is the same fallback
+		every other element gets.
 	"""
 	del params
 	body = analytics.get(f'/ppe{source.route}', {})
-	if body is None or body.get('status') == 'ok':
+	if body is None:
 		return None
+	stamp = catalogue.now().isoformat(timespec='seconds')
+	if body.get('status') == 'ok' and body.get('value') is not None:
+		# The model landed. Its number is the answer, and the shape is the
+		# one this card has been drawing all along.
+		value = float(body['value'])
+		return Built(
+			data=models.KpiPayload(
+				value=context.format(value),
+				unit=context.unit(),
+				severity=formatting.count_severity(value),
+			),
+			updated_at=stamp,
+		)
 	return Built(
 		data=models.KpiPayload(
 			value=_NO_VALUE,
 			unit=context.unit(),
 			severity=models.Severity.INFO,
 		),
-		updated_at=catalogue.now().isoformat(timespec='seconds'),
+		updated_at=stamp,
 	)
 
 

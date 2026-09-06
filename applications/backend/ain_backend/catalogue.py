@@ -88,10 +88,16 @@ class Source:
 	# Appended to the kind's route: '/events' + '/congestion'.
 	route: str = ''
 	params: tuple[tuple[str, str], ...] = ()
-	# Stat groups only: (stat id, zone name) per part. The total is their
-	# sum, which is only correct because the zones are drawn disjoint -
-	# there is no cross-camera re-identification to deduplicate with.
-	split: tuple[tuple[str, str], ...] = ()
+	# Stat groups only: (stat id, zone name, label) per part. The total is
+	# their sum, which is only correct because the zones are drawn disjoint
+	# - there is no cross-camera re-identification to deduplicate with.
+	#
+	# The label rides along so that a second split card - back-of-house
+	# against front, say - is still one ElementSpec and nothing else. A
+	# lookup table of stat ids somewhere downstream would make it two
+	# edits in two files, which is the property this design exists to
+	# keep.
+	split: tuple[tuple[str, str, i18n.Text], ...] = ()
 
 	def query(self) -> dict[str, object]:
 		"""The params as the client wants them."""
@@ -192,7 +198,10 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		value_min=8, value_max=60,
 		source=Source(
 			kind=SourceKind.OCCUPANCY,
-			split=(('indoor', 'indoor'), ('outdoor', 'outdoor')),
+			split=(
+				('indoor', 'indoor', i18n.INDOOR),
+				('outdoor', 'outdoor', i18n.OUTDOOR),
+			),
 		),
 	),
 	ElementSpec(
