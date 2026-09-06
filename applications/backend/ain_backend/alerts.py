@@ -1,12 +1,17 @@
-"""Alert monitors and the rules built on them.
+"""Alert monitors, the rules built on them, and how those rules have done.
 
 Everything else in this service is stateless and derived. Rules are the
-exception: the frontend keeps no copy, so a created rule has to come
-back from the next read. That store is a process-local dict here, which
-is enough for a placeholder backend and wrong for a real one - it does
-not survive a restart and two replicas would disagree.
+exception: the frontend keeps no copy, so a created rule has to come back
+from the next read. They live in `ain_backend.store`, which is SQLite -
+not ClickHouse, which holds the detections but handles small mutable
+row-level state badly.
 
-TODO: move `RULES` to a database table.
+Rules are evaluated **on read**. Opening the alerts page runs each one as
+a query against the analytics service for the window in view. That costs
+nothing, needs no scheduler, and keeps every read route a pure function
+of its query string. Pushing a notification is a different service: it
+needs a timer, a delivery channel, and dedupe so that one sustained
+breach does not send forty messages.
 """
 
 import dataclasses
@@ -16,8 +21,10 @@ import uuid
 from ain_backend import catalogue
 from ain_backend import formatting
 from ain_backend import i18n
+from ain_backend import live
 from ain_backend import models
 from ain_backend import payloads
+from ain_backend import store
 
 _COMPARATORS = {
 	models.Comparator.ABOVE: i18n.ABOVE,
@@ -46,7 +53,17 @@ class StoredRule:
 	venue: str
 
 
-RULES: dict[str, StoredRule] = {}
+def _stored(row) -> StoredRule:
+	"""Reads one database row back into a rule."""
+	return StoredRule(
+		id=row['id'],
+		monitor_id=row['monitor_id'],
+		comparator=models.Comparator(row['comparator']),
+		threshold=row['threshold'],
+		created_on=datetime.date.fromisoformat(row['created_on']),
+		branch=row['branch'],
+		venue=row['venue'],
+	)
 
 
 def _monitor_spec(monitor_id: str) -> catalogue.ElementSpec:
@@ -107,15 +124,49 @@ def _created_label(
 	return f'{i18n.CREATED_ON.get(locale)} {created_on.isoformat()}'
 
 
-def localise(rule: StoredRule, locale: i18n.Locale) -> models.AlertRule:
-	"""Renders a stored rule in one language.
+def _status(
+	count: int | None, locale: i18n.Locale
+) -> tuple[str | None, models.Severity | None]:
+	"""Turns a breach count into the sentence and colour a row prints.
+
+	Args:
+		count: How many times the rule fired, or None if it could not be
+			evaluated.
+		locale: The requested language.
+
+	Returns:
+		The label and the severity, or (None, None) when the count is
+		unknown. Unknown is not zero: "we did not check" and "it did not
+		happen" must not read the same.
+	"""
+	if count is None:
+		return None, None
+	if count == 0:
+		return i18n.NOT_FIRED.get(locale), models.Severity.OK
+	if count == 1:
+		return i18n.FIRED_ONCE.get(locale), models.Severity.WARN
+	return (
+		i18n.FIRED_TIMES.get(locale).format(count=count),
+		formatting.count_severity(count),
+	)
+
+
+def localise(
+	rule: StoredRule,
+	locale: i18n.Locale,
+	range_key: str = 'today',
+) -> models.AlertRule:
+	"""Renders a stored rule in one language, and evaluates it.
 
 	Args:
 		rule: The language-neutral record.
 		locale: The language to read it in.
+		range_key: The window to evaluate the rule over.
 
 	Returns:
-		The rule as the frontend prints it, sentences included.
+		The rule as the frontend prints it, sentences included, with how
+		many times it fired over that window when there is a pipeline
+		behind its monitor to ask.
 	"""
 	spec = catalogue.ELEMENTS_BY_ID.get(rule.monitor_id)
 	label = spec.title.get(locale) if spec else rule.monitor_id
@@ -131,6 +182,12 @@ def localise(rule: StoredRule, locale: i18n.Locale) -> models.AlertRule:
 	summary = f'{comparator} {threshold}'
 	if unit:
 		summary = f'{summary} {unit}'
+	breaches = (
+		live.breaches(spec, rule.comparator.value, rule.threshold, range_key)
+		if spec
+		else None
+	)
+	status_label, severity = _status(breaches, locale)
 	return models.AlertRule(
 		id=rule.id,
 		monitor_id=rule.monitor_id,
@@ -140,14 +197,20 @@ def localise(rule: StoredRule, locale: i18n.Locale) -> models.AlertRule:
 		unit=unit,
 		summary=summary,
 		created_label=_created_label(rule.created_on, locale),
+		breaches=breaches,
+		status_label=status_label,
+		severity=severity,
 	)
 
 
-def list_rules(locale: i18n.Locale) -> models.AlertRuleList:
-	"""Returns every stored rule, localised at read time.
+def list_rules(
+	locale: i18n.Locale, range_key: str = 'today'
+) -> models.AlertRuleList:
+	"""Returns every stored rule, localised and evaluated at read time.
 
 	Args:
 		locale: The requested language.
+		range_key: The window to evaluate each rule over.
 
 	Returns:
 		The rules, newest first. Scoping rules to a branch or a venue is
@@ -155,12 +218,8 @@ def list_rules(locale: i18n.Locale) -> models.AlertRuleList:
 	"""
 	return models.AlertRuleList(
 		rules=[
-			localise(rule, locale)
-			for rule in sorted(
-				RULES.values(),
-				key=lambda rule: rule.created_on,
-				reverse=True,
-			)
+			localise(_stored(row), locale, range_key)
+			for row in store.rows()
 		]
 	)
 
@@ -195,10 +254,18 @@ def create_rule(
 		branch=branch,
 		venue=venue,
 	)
-	RULES[stored.id] = stored
+	store.insert(
+		stored.id,
+		stored.monitor_id,
+		stored.comparator.value,
+		stored.threshold,
+		stored.created_on,
+		stored.branch,
+		stored.venue,
+	)
 	return localise(stored, locale)
 
 
 def delete_rule(rule_id: str) -> bool:
 	"""Deletes one rule, reporting whether it existed."""
-	return RULES.pop(rule_id, None) is not None
+	return store.delete(rule_id)

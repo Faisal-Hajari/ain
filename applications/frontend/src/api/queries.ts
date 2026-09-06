@@ -10,6 +10,7 @@ import type {
   InstanceLog,
   Locale,
   UpdateCadence,
+  ZonesResponse,
 } from './types'
 
 /** How often a card re-asks the backend, by the cadence the catalogue gives it. */
@@ -76,5 +77,20 @@ export function useDeleteAlertRule(filters: QueryParams) {
   return useMutation({
     mutationFn: (ruleId: string) => apiSend<void>('DELETE', `/alerts/rules/${ruleId}`, undefined, filters),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['alert-rules'] }),
+  })
+}
+
+/**
+ * The zone and line shapes drawn over a camera tile.
+ *
+ * Configuration rather than a measurement, so it is cached hard: it changes
+ * when somebody edits cameras.yml, which is not something to poll for.
+ */
+export function useZones({ enabled = true } = {}) {
+  return useQuery({
+    queryKey: ['zones'],
+    queryFn: ({ signal }) => apiGet<ZonesResponse>('/zones', undefined, signal),
+    staleTime: 30 * 60_000,
+    enabled,
   })
 }

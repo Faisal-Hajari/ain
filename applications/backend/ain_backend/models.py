@@ -273,6 +273,13 @@ class AlertRule(Model):
 	unit: str | None = None
 	summary: str
 	created_label: str
+	# How the rule has actually done over the window in view. Absent when
+	# there is no pipeline behind the monitor to evaluate it against, which
+	# is different from "it has not fired": one is unknown, the other is
+	# zero, and a card must not print them the same way.
+	breaches: int | None = None
+	status_label: str | None = None
+	severity: Severity | None = None
 
 
 class AlertRuleList(Model):

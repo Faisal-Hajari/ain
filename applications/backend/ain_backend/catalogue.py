@@ -8,6 +8,7 @@ disagreeing.
 
 import dataclasses
 import datetime
+import enum
 import zoneinfo
 
 from ain_backend import formatting
@@ -57,6 +58,46 @@ class CameraSpec:
 		return f'/cam{int(self.id)}/index.m3u8'
 
 
+class SourceKind(enum.StrEnum):
+	"""Which analytics endpoint an element's numbers come from.
+
+	The kind picks the builder; `params` is passed straight through as
+	the query string. Adding a KPI that measures something the pipeline
+	already computes is one `ElementSpec` with one of these on it -
+	no new route here, no new SQL there, no deployment of either.
+	"""
+
+	OCCUPANCY = 'occupancy'
+	FOOTFALL = 'footfall'
+	DWELL = 'dwell'
+	EVENTS = 'events'
+	PPE = 'ppe'
+
+
+@dataclasses.dataclass(frozen=True)
+class Source:
+	"""Where an element's numbers come from, when they come from cameras.
+
+	An element without one is served by the generated data in
+	`payloads`, and so is an element with one whose service has nothing
+	to say yet. That fallback is deliberate: a pipeline still building
+	its TensorRT engine must not empty the dashboard.
+	"""
+
+	kind: SourceKind
+	# Appended to the kind's route: '/events' + '/congestion'.
+	route: str = ''
+	params: tuple[tuple[str, str], ...] = ()
+	# Stat groups only: (stat id, zone name) per part. The total is their
+	# sum, which is only correct because the zones are drawn disjoint -
+	# there is no cross-camera re-identification to deduplicate with.
+	split: tuple[tuple[str, str], ...] = ()
+
+	def query(self) -> dict[str, object]:
+		"""The params as the client wants them."""
+		return dict(self.params)
+
+
 @dataclasses.dataclass(frozen=True)
 class ElementSpec:
 	"""One card, before it is localised into an `ElementDef`."""
@@ -76,6 +117,8 @@ class ElementSpec:
 	# units - minutes for durations, percent for gauges.
 	value_min: float = 0
 	value_max: float = 24
+	# Where the real numbers come from. None means "generated only".
+	source: Source | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -147,6 +190,10 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		cameras=('03', '04', '06', '09', '10'),
 		unit=i18n.PEOPLE,
 		value_min=8, value_max=60,
+		source=Source(
+			kind=SourceKind.OCCUPANCY,
+			split=(('indoor', 'indoor'), ('outdoor', 'outdoor')),
+		),
 	),
 	ElementSpec(
 		id='footfall',
@@ -158,6 +205,9 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		type=_Type.LINE, kind=_Kind.MONITOR, updates=_Cadence.HOURLY,
 		span=2, cameras=('03',), unit=i18n.PEOPLE,
 		value_min=4, value_max=140,
+		source=Source(
+			kind=SourceKind.FOOTFALL, params=(('line', 'entrance'),)
+		),
 	),
 	ElementSpec(
 		id='queue-length',
@@ -167,9 +217,14 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 			'عدد العملاء المنتظرين عند الكاونتر.',
 		),
 		type=_Type.KPI, kind=_Kind.MONITOR, updates=_Cadence.REALTIME,
-		cameras=('03', '11'),
+		# Camera 11 looks at the register from behind the counter and sees
+		# only staff. The queue forms on camera 12's side of it.
+		cameras=('12',),
 		unit=i18n.PEOPLE,
 		value_min=0, value_max=18,
+		source=Source(
+			kind=SourceKind.OCCUPANCY, params=(('zone', 'queue'),)
+		),
 	),
 	ElementSpec(
 		id='queue-wait-time',
@@ -179,9 +234,10 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 			'الوقت الذي يقضيه العملاء في الطابور.',
 		),
 		type=_Type.KPI, kind=_Kind.MONITOR, updates=_Cadence.EVENT,
-		cameras=('03', '11'),
+		cameras=('12',),
 		value_format=_ValueFormat.DURATION,
 		value_min=1, value_max=14,
+		source=Source(kind=SourceKind.DWELL, params=(('zone', 'queue'),)),
 	),
 	ElementSpec(
 		id='dwell-time-per-table',
@@ -191,8 +247,9 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 			'الدقائق من الجلوس حتى مغادرة الطاولة.',
 		),
 		type=_Type.HISTOGRAM, kind=_Kind.MONITOR, updates=_Cadence.VISIT,
-		span=2, cameras=('03', '04'),
+		span=2, cameras=('04',),
 		value_min=4, value_max=90,
+		source=Source(kind=SourceKind.DWELL, params=(('zone', 'tables'),)),
 	),
 	ElementSpec(
 		id='congestion-count',
@@ -204,6 +261,11 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		type=_Type.KPI, kind=_Kind.ALERT, updates=_Cadence.EVENT,
 		cameras=('03', '04'), drilldown='instances', unit=i18n.EVENTS,
 		value_min=0, value_max=14,
+		source=Source(
+			kind=SourceKind.EVENTS,
+			route='/congestion',
+			params=(('zone', 'indoor'), ('n', '8'), ('m', '2')),
+		),
 	),
 	ElementSpec(
 		id='empty-restaurant-count',
@@ -215,6 +277,11 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		type=_Type.KPI, kind=_Kind.ALERT, updates=_Cadence.EVENT,
 		cameras=('03', '04'), drilldown='instances', unit=i18n.EVENTS,
 		value_min=0, value_max=8,
+		source=Source(
+			kind=SourceKind.EVENTS,
+			route='/empty',
+			params=(('zone', 'indoor'), ('n', '1'), ('m', '10')),
+		),
 	),
 	ElementSpec(
 		id='long-wait-count',
@@ -224,8 +291,13 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 			'عدد المرات التي انتظر فيها عميل أكثر من X دقيقة.',
 		),
 		type=_Type.KPI, kind=_Kind.ALERT, updates=_Cadence.EVENT,
-		cameras=('03', '11'), drilldown='instances', unit=i18n.EVENTS,
+		cameras=('12',), drilldown='instances', unit=i18n.EVENTS,
 		value_min=0, value_max=16,
+		source=Source(
+			kind=SourceKind.EVENTS,
+			route='/long-wait',
+			params=(('zone', 'queue'), ('m', '5')),
+		),
 	),
 	ElementSpec(
 		id='no-gloves-count',
@@ -237,6 +309,7 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		type=_Type.KPI, kind=_Kind.ALERT, updates=_Cadence.EVENT,
 		cameras=('05',), drilldown='instances', unit=i18n.EVENTS,
 		value_min=0, value_max=14,
+		source=Source(kind=SourceKind.PPE, route='/no-gloves'),
 	),
 	ElementSpec(
 		id='no-hair-cover-count',
@@ -248,6 +321,7 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		type=_Type.KPI, kind=_Kind.ALERT, updates=_Cadence.EVENT,
 		cameras=('05',), drilldown='instances', unit=i18n.EVENTS,
 		value_min=0, value_max=12,
+		source=Source(kind=SourceKind.PPE, route='/no-hair-cover'),
 	),
 	ElementSpec(
 		id='no-mask-count',
@@ -259,6 +333,7 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		type=_Type.KPI, kind=_Kind.ALERT, updates=_Cadence.EVENT,
 		cameras=('05',), drilldown='instances', unit=i18n.EVENTS,
 		value_min=0, value_max=16,
+		source=Source(kind=SourceKind.PPE, route='/no-mask'),
 	),
 	ElementSpec(
 		id='camera-status',

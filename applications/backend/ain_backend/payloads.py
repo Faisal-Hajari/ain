@@ -5,8 +5,12 @@ card never flickers between polls. The seed deliberately excludes the
 language: switching locale must re-label a card without moving a single
 number.
 
-This module is the seam. Replacing it with real read models leaves the
-catalogue, the contract and the routes untouched.
+This module is the fallback, not the only answer. `live` builds the same
+shapes from what the cameras saw and `build_element` tries that first;
+this takes over whenever an element declares no source, the analytics
+service is unset or unreachable, or it has nothing stored for the window.
+That is what keeps a card readable while the pipeline is still building
+its TensorRT engine.
 """
 
 import dataclasses
@@ -18,6 +22,7 @@ from collections.abc import Callable, Sequence
 from ain_backend import catalogue
 from ain_backend import formatting
 from ain_backend import i18n
+from ain_backend import live
 from ain_backend import models
 
 _DURATION = formatting.ValueFormat.DURATION
@@ -492,13 +497,25 @@ def build_element(
 		range_value: The raw `range` filter.
 
 	Returns:
-		The response, with a `type` matching the config's.
+		The response, with a `type` matching the config's. Built from
+		what the cameras saw when the element declares a source and the
+		analytics service has something to say, and from the generated
+		data otherwise - which is what keeps a card readable while the
+		pipeline is still warming up.
 
 	Raises:
 		UnknownElementError: The catalogue has no such element.
 	"""
 	spec = _spec_or_raise(element_id)
 	context = _context(spec, seed_key, locale, range_value)
+	built = live.build(context)
+	if built is not None:
+		return models.ElementResponse(
+			element_id=spec.id,
+			updated_at=built.updated_at,
+			type=spec.type,
+			data=built.data,
+		)
 	return models.ElementResponse(
 		element_id=spec.id,
 		updated_at=_updated_at(spec.updates),
@@ -527,6 +544,9 @@ def build_instance_log(
 	"""
 	spec = _spec_or_raise(element_id)
 	context = _context(spec, seed_key, locale, range_value, 'instances')
+	real = live.instances(context)
+	if real is not None:
+		return real
 	rand = context.rand
 	total = rand.randint(3, 12)
 	cameras = spec.cameras or ('03',)

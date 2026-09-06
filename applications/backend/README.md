@@ -3,10 +3,18 @@
 The read side of the AIN dashboard: layout, KPI payloads and alert rules.
 Everything that feeds the database runs in other microservices.
 
-Values are placeholders — deterministic, generated per request from the
-element id and the active filters. `ain_backend/payloads.py` is the only
-module that invents a number; replacing it with real read models leaves the
-contract, the catalogue and the routes untouched.
+Values come from the cameras when there are any, and from a deterministic
+generator when there are not. `ain_backend/live.py` builds a card from what
+`analytics-api` measured; `ain_backend/payloads.py` builds the same shapes from
+a seeded random walk, and takes over whenever the analytics service is unset,
+unreachable, or has nothing stored yet. That fallback is why a pipeline still
+building its TensorRT engine leaves a readable dashboard rather than an empty
+one.
+
+Which of the two answers is decided by one field. An element in
+`catalogue.py` that carries a `Source` is asked of the analytics service;
+one without is generated. **Adding a KPI the pipeline already computes is one
+`ElementSpec` and nothing else** — no new route here, no new SQL there.
 
 The service implements `applications/frontend/src/api/types.ts`. The frontend
 is a renderer with no domain knowledge, so this backend owns the layout, every
@@ -42,9 +50,17 @@ The service exposes these routes:
 | `GET /api/elements/{id}` | one card's payload, shaped for its `type` |
 | `GET /api/elements/{id}/instances` | the occurrences behind an alert card |
 | `GET /api/alerts/monitors` | what a rule can watch, with 30-day averages |
-| `GET /api/alerts/rules` | stored rules, localised at read time |
+| `GET /api/alerts/rules` | stored rules, localised **and evaluated** at read time |
 | `POST /api/alerts/rules` | creates a rule, returns the canonical record |
 | `DELETE /api/alerts/rules/{id}` | `204`, whether or not it existed |
+| `GET /api/zones` | the zone and line shapes drawn over a camera tile |
+| `GET /api/overlay` | detection boxes for one camera over one short window |
+| `GET /api/clips/{event}.mp4` | the video behind one alert, boxes burnt in |
+
+Rules are evaluated on read: opening the alerts page runs each one as a query
+for the window in view, which costs nothing and needs no scheduler. Pushing a
+notification would be a different service — a timer, a delivery channel, and
+dedupe so one sustained breach does not send forty messages.
 
 Query parameters on every data route: `branch`, `venue`, `range`, `lang`.
 `range` is `today`, `7d`, `30d`, or an ISO date meaning "from that day to
@@ -58,6 +74,9 @@ Each module owns one concern:
 | --- | --- |
 | `models.py` | the wire contract; snake_case here, camelCase on the wire |
 | `catalogue.py` | cameras, filters, elements, sections — the layout |
+| `live.py` | the same payloads, built from what the cameras saw |
+| `analytics.py` | the client for `analytics-api`, and the fallback around it |
+| `store.py` | alert rules, in SQLite — the one piece of mutable state |
 | `i18n.py` | every localised string that is not an element title |
 | `formatting.py` | display strings and judgement (`severity`, `sentiment`) |
 | `payloads.py` | the placeholder generator, one builder per element type |

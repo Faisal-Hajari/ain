@@ -34,6 +34,10 @@ export function AlertRuleList({ filters }: { filters: QueryParams }) {
               >
                 <span className="text-sm font-medium">{rule.monitorLabel}</span>
                 <Chip severity="warn">{rule.summary}</Chip>
+                {/* How the rule has actually done, evaluated when this list
+                    was read. A rule whose monitor has no pipeline behind it
+                    carries no label at all rather than a reassuring zero. */}
+                {rule.statusLabel ? <Chip severity={rule.severity ?? 'info'}>{rule.statusLabel}</Chip> : null}
                 <span className="text-[11px] text-muted">{rule.createdLabel}</span>
                 {pending.value === rule.id ? (
                   <span className="ms-auto flex items-center gap-2">

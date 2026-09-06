@@ -1,0 +1,85 @@
+"""The generator, checked for the two mistakes that are silent."""
+
+import pathlib
+import sys
+
+import pytest
+import yaml
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+
+import compose_gen  # noqa: E402
+
+
+@pytest.fixture(name='rendered')
+def _rendered() -> str:
+	"""The compose file the real cameras.yml produces."""
+	return compose_gen.render(compose_gen.load_config())
+
+
+def test_every_camera_gets_one_adapter(rendered):
+	services = yaml.safe_load(rendered)['services']
+	assert len(services) == len(compose_gen.load_config()['cameras'])
+
+
+def test_camera_ids_are_quoted_in_the_generated_file(rendered):
+	# `SOURCE_ID: 09` left bare reaches the adapter as `9`: PyYAML does not
+	# quote it, because YAML 1.1 does not read it as a number, and Compose's
+	# parser does. Every row that camera produces then lands under a
+	# source_id the catalogue has never heard of, and the camera silently
+	# contributes to nothing.
+	for line in rendered.splitlines():
+		if 'SOURCE_ID' in line:
+			assert "'" in line or '"' in line, line
+
+
+def test_source_ids_are_the_backend_ids_not_the_stream_paths(rendered):
+	services = yaml.safe_load(rendered)['services']
+	adapter = services['savant-source-09']['environment']
+	assert adapter['SOURCE_ID'] == '09'
+	assert adapter['RTSP_URI'].endswith('/cam9')
+
+
+def test_absolute_timestamps_are_on(rendered):
+	# Without this, pts is stream-relative and resets on reconnect: no
+	# stored row can be joined to a recording or to a HLS segment, and
+	# every one of them is worthless.
+	services = yaml.safe_load(rendered)['services']
+	for name, service in services.items():
+		assert service['environment']['USE_ABSOLUTE_TIMESTAMPS'] == 'True', name
+
+
+def test_adapters_read_mediamtx_not_the_recordings(rendered):
+	# Reading the mp4 files directly would be cheaper and would make browser
+	# overlays permanently impossible: Savant and MediaMTX would each loop
+	# the same file independently and drift apart within minutes.
+	services = yaml.safe_load(rendered)['services']
+	for name, service in services.items():
+		assert service['environment']['RTSP_URI'].startswith(
+			'rtsp://cameras:8554/'
+		), name
+
+
+def test_the_input_socket_is_not_pub_sub(rendered):
+	# The sources carry H.264. PUB/SUB drops without backpressure, and a
+	# dropped keyframe corrupts every frame after it.
+	services = yaml.safe_load(rendered)['services']
+	for name, service in services.items():
+		assert service['environment']['ZMQ_ENDPOINT'].startswith(
+			'dealer+connect:'
+		), name
+
+
+def test_a_bow_tie_polygon_is_rejected():
+	with pytest.raises(compose_gen.ConfigError, match='bow-tie'):
+		compose_gen._check_polygon(
+			'zone test', [[0, 0], [1, 1], [1, 0], [0, 1]]
+		)
+
+
+def test_a_convex_polygon_is_accepted():
+	compose_gen._check_polygon('zone test', [[0, 0], [1, 0], [1, 1], [0, 1]])
+
+
+def test_the_real_config_has_no_bow_ties():
+	compose_gen.load_config()

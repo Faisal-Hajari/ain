@@ -137,6 +137,37 @@ only the "No signal" line, because a flat total and its complement would say the
 same thing three times - but every series must name one of the stats, and its
 last point must be the number that stat prints.
 
+### Detection overlay
+
+Three routes exist for the camera tiles rather than for a card, and none of them
+carries a formatted string:
+
+| Route | Returns |
+| --- | --- |
+| `GET /api/zones` | zone polygons and counting lines, normalised 0..1 |
+| `GET /api/overlay?camera=&start=&end=` | detection boxes, per frame, for at most 60s |
+| `GET /api/clips/{event}.mp4?camera=&start=&end=` | that window as video, boxes burnt in |
+
+`/overlay` is fetched **per window of time, not per frame** - one request per
+camera per few seconds - and every box is normalised against the camera's own
+frame, because the tile is whatever size the grid makes it. The client matches a
+box to the frame on screen through the HLS `EXT-X-PROGRAM-DATE-TIME` tag, which
+hls.js exposes as `playingDate`; a stream served without that tag cannot be
+overlaid at all.
+
+The clip is the one place boxes are drawn server-side. A browser overlay is a
+rendering, not a file: an mp4 saved from the instance log and opened in a player
+has to carry its own annotation.
+
+### Unavailable values
+
+A value the system cannot produce is a dash, never a zero. The PPE counts are
+the live case: a person detector cannot tell whether somebody is wearing gloves,
+and `0` would assert "we watched the kitchen and nobody violated the policy" -
+which, since severity is derived from the value, would very likely render green.
+The card carries `value: "—"` and `severity: "info"`, and the shape is otherwise
+unchanged for the day the model lands.
+
 ---
 
 ## 5. Localization
@@ -186,9 +217,13 @@ cd applications/backend && uv run uvicorn ain_backend.main:app --reload --port 8
 ```
 
 Every route, query parameter and payload shape is published at
-[`/docs`](http://localhost:8000/docs). Alert rules are held in a process-local
-dict, so a restart clears them; everything else is a pure function of the query
+[`/docs`](http://localhost:8000/docs). Alert rules are the one piece of mutable
+state and live in SQLite; everything else is a pure function of the query
 string.
+
+KPI values come from the cameras when the analytics service has anything to say
+about them, and from a deterministic generator otherwise - the same shapes
+either way, so a card stays readable while the pipeline is warming up.
 
 ---
 
@@ -205,9 +240,11 @@ on them.
 3. **Instance-log pagination.** `total` can exceed the returned list, but there
    is no "load more" control. Either cap the list and accept it, or say how many
    you will return.
-4. **Alert-rule evaluation.** The frontend creates and lists rules; nothing
-   defines what happens when one fires — no notification channel, no fired-alert
-   feed, no acknowledge flow.
+4. **Alert-rule notification.** Rules are now evaluated on read: listing them
+   runs each one for the window in view and returns `breaches` plus a
+   pre-formatted `statusLabel`. What is still undecided is *pushing* — a
+   notification channel, and dedupe so one sustained breach does not send forty
+   messages. That is a service with a timer, not a flag on this one.
 5. **Camera stream auth.** The tiles play whatever `streamUrl` points at, with
    no credentials. A stream server that needs auth has no way to be told yet.
 6. **Rule scoping.** Rules are created with the active filters in the query

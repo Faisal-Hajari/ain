@@ -9,8 +9,11 @@ import pytest
 
 from ain_backend import alerts
 from ain_backend import catalogue
+from ain_backend import i18n
+from ain_backend import live
 from ain_backend import main
 from ain_backend import models
+from ain_backend import store
 
 FILTERS = {'branch': 'olaya', 'venue': 'cafe', 'range': 'today'}
 
@@ -18,7 +21,7 @@ FILTERS = {'branch': 'olaya', 'venue': 'cafe', 'range': 'today'}
 @pytest.fixture(name='client')
 def client_fixture() -> fastapi.testclient.TestClient:
 	"""Returns a client bound to the app, with an empty rule store."""
-	alerts.RULES.clear()
+	store.clear()
 	return fastapi.testclient.TestClient(main.app)
 
 
@@ -341,3 +344,96 @@ def test_feed_health_carries_the_downtime_over_the_window(client):
 	assert trend['points']
 	for point in trend['points']:
 		assert 0 <= point['offline'] <= total
+
+
+def test_a_rule_survives_a_new_connection(client):
+	"""The store is a database, not a dict in the process."""
+	created = client.post(
+		'/api/alerts/rules',
+		params=FILTERS,
+		json={
+			'monitorId': 'queue-length',
+			'comparator': 'above',
+			'threshold': 12,
+		},
+	)
+	assert created.status_code == 201
+	# A different thread opens its own connection, which is where a
+	# per-connection in-memory database would lose the row.
+	rows = store.rows()
+	assert [row['id'] for row in rows] == [created.json()['id']]
+	assert rows[0]['monitor_id'] == 'queue-length'
+	assert rows[0]['comparator'] == 'above'
+
+
+def test_deleting_a_rule_empties_the_store(client):
+	created = client.post(
+		'/api/alerts/rules',
+		params=FILTERS,
+		json={
+			'monitorId': 'queue-length',
+			'comparator': 'above',
+			'threshold': 12,
+		},
+	)
+	client.delete(f'/api/alerts/rules/{created.json()["id"]}')
+	assert store.rows() == []
+
+
+def test_a_rule_with_nothing_behind_it_reports_no_status():
+	"""Unknown is not zero.
+
+	A rule the pipeline cannot evaluate must not read as "did not fire":
+	one says nothing happened, the other says nobody looked, and a chip
+	saying the first about the second is worse than no chip.
+	"""
+	label, severity = alerts._status(None, i18n.Locale.EN)
+	assert label is None
+	assert severity is None
+
+
+def test_a_rule_that_did_not_fire_says_so():
+	label, severity = alerts._status(0, i18n.Locale.EN)
+	assert label == 'Not fired'
+	assert severity is models.Severity.OK
+
+
+def test_a_rule_that_fired_a_lot_is_critical():
+	label, severity = alerts._status(7, i18n.Locale.EN)
+	assert '7' in label
+	assert severity is models.Severity.CRITICAL
+
+
+def test_a_duration_rule_is_converted_to_the_seconds_analytics_speaks(
+	monkeypatch,
+):
+	"""Every duration in the catalogue is minutes; analytics is seconds."""
+	sent: dict = {}
+
+	def fake_get(path, params):
+		sent.update({'path': path, **params})
+		return {'count': 2}
+
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(live.analytics, 'get', fake_get)
+	spec = catalogue.ELEMENTS_BY_ID['queue-wait-time']
+	assert live.breaches(spec, 'above', 5, 'today') == 2
+	assert sent['path'] == '/events'
+	assert sent['threshold'] == 300
+	assert sent['zone'] == 'queue'
+	assert sent['metric'] == 'dwell'
+
+
+def test_a_split_stat_group_is_evaluated_over_its_first_zone(monkeypatch):
+	sent: dict = {}
+
+	def fake_get(path, params):
+		sent.update(params)
+		return {'count': 0}
+
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(live.analytics, 'get', fake_get)
+	spec = catalogue.ELEMENTS_BY_ID['live-occupancy']
+	assert live.breaches(spec, 'above', 40, 'today') == 0
+	assert sent['zone'] == 'indoor'
+	assert sent['threshold'] == 40

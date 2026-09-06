@@ -1,0 +1,106 @@
+# The one place the camera namespaces meet, and the only place any geometry
+# lives.
+#
+# Three things read this file:
+#   * compose_gen.py, which writes one Savant source adapter per camera;
+#   * ain_analytics.api, which turns a zone name into polygons to test
+#     detections against;
+#   * the browser overlay, which draws those same polygons over the video.
+#
+# It deliberately does NOT feed module.yml. A Savant module is camera-
+# agnostic - it processes whatever source_id arrives - and manifest
+# interpolation resolves once, at module init. Anything geometric baked into
+# the manifest would cost a GPU restart per zone edit, and would make it
+# impossible to move a zone and recompute last month.
+#
+# Every coordinate is normalised 0..1 against the frame, so this file, the
+# rows in ClickHouse and the <canvas> in the browser all share one space and
+# nothing has to know a resolution. Note the cameras are not all the same
+# shape: 04, 06, 09, 10, 12 and 15 are 1280x1440 portrait, the rest 1280x720.
+#
+# Zone membership and line crossings are tested against the FOOT POINT of a
+# box (yc + h/2), never its centre: on a wall-mounted camera the centre
+# drifts across a boundary when somebody leans.
+
+kafka:
+  brokers: kafka:9092
+  topic: ain.people.raw
+
+cameras:
+  '03': {stream: cam3,  description: 'Indoor entrance and lobby / waiting area'}
+  '04': {stream: cam4,  description: 'Indoor seating (high-top tables)'}
+  '05': {stream: cam5,  description: 'Kitchen - fryer line and hot-food prep'}
+  '06': {stream: cam6,  description: 'Outdoor street frontage and parking bays'}
+  '09': {stream: cam9,  description: 'Outdoor parking area and street frontage'}
+  '10': {stream: cam10, description: 'Outdoor rear / side parking and lane'}
+  '11': {stream: cam11, description: 'Register / POS, staff side of the counter'}
+  '12': {stream: cam12, description: 'Service counter, customer side'}
+  '13': {stream: cam13, description: 'Back-of-house storage and utility corridor'}
+  '15': {stream: cam15, description: 'Rear service alley and delivery door'}
+
+# A zone is a list of (camera, polygon) parts, summed. There is no cross-camera
+# re-identification, so anybody standing where two parts overlap is counted
+# twice - which is why each part is drawn to own a disjoint patch of floor.
+# `indoor` and `outdoor` between them are what live-occupancy splits.
+zones:
+  indoor:
+    # The lobby's wooden floor, stopping at the door frame: past it is tile,
+    # and past the tile is the street, which is camera 06's.
+    - camera: '03'
+      points: [[0.00, 0.62], [0.22, 0.45], [0.52, 0.42], [0.74, 0.62],
+               [0.74, 1.00], [0.00, 1.00]]
+    # The seating corridor. Portrait frame, so the walkable strip is tall.
+    - camera: '04'
+      points: [[0.28, 0.28], [0.90, 0.18], [0.95, 0.60], [0.60, 1.00],
+               [0.12, 1.00]]
+    # The floor in front of the service counter, minus the queue strip below,
+    # is the same patch - so the counter area belongs to `queue` alone and
+    # `indoor` does not claim it.
+
+  outdoor:
+    - camera: '06'
+      points: [[0.02, 0.32], [0.98, 0.24], [0.98, 1.00], [0.02, 1.00]]
+    - camera: '09'
+      points: [[0.04, 0.30], [0.98, 0.28], [0.98, 1.00], [0.04, 1.00]]
+    - camera: '10'
+      points: [[0.02, 0.28], [0.98, 0.26], [0.98, 1.00], [0.02, 1.00]]
+
+  # Where customers actually stand to order. Camera 11 looks at the register
+  # from behind the counter and sees only staff, so the queue is camera 12's
+  # strip of floor alongside the hot-food display. The band follows the
+  # counter, which runs diagonally across a portrait frame: customers were
+  # observed standing at (0.18, 0.33), (0.34, 0.60) and (0.72, 0.93) at
+  # different points in the recording, and all three are inside this.
+  queue:
+    - camera: '12'
+      points: [[0.10, 0.20], [0.98, 0.66], [0.98, 1.00], [0.55, 1.00],
+               [0.03, 0.52]]
+
+  kitchen:
+    - camera: '05'
+      points: [[0.03, 0.45], [0.50, 0.28], [0.80, 0.20], [0.98, 0.35],
+               [0.98, 1.00], [0.03, 1.00]]
+
+  # Named parts: dwell is reported per table, so each part carries a name and
+  # the histogram is grouped by it.
+  tables:
+    - camera: '04'
+      name: table-1
+      points: [[0.33, 0.55], [0.60, 0.55], [0.62, 0.90], [0.35, 0.90]]
+    - camera: '04'
+      name: table-2
+      points: [[0.52, 0.33], [0.70, 0.33], [0.72, 0.52], [0.54, 0.52]]
+    - camera: '04'
+      name: table-3
+      points: [[0.66, 0.13], [0.80, 0.13], [0.82, 0.30], [0.68, 0.30]]
+
+# Two parallel lines, not one. A single line and a jittering bounding box
+# produce phantom crossings all day; requiring both to be crossed, in order,
+# throws them away. `outer` is the street side of the threshold and `inner`
+# the lobby side, so outer->inner is a customer coming in and inner->outer is
+# one leaving.
+lines:
+  entrance:
+    camera: '03'
+    outer: [[0.73, 0.40], [1.00, 0.83]]
+    inner: [[0.66, 0.46], [0.93, 0.89]]

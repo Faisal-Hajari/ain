@@ -22,8 +22,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Every application that ships a Dockerfile. A new one is a line here.
-        app: [backend, frontend]
+        # Every image the stack ships. `context` is where its Dockerfile
+        # lives and `target` which stage to build; the analytics image has
+        # two, because the ingest consumer has to be built on the Savant
+        # adapters image (savant-rs is not on PyPI) and the API does not.
+        include:
+          - app: backend
+            context: applications/backend
+          - app: frontend
+            context: applications/frontend
+          - app: analytics-api
+            context: analytics
+            target: api
+          - app: track-ingest
+            context: analytics
+            target: ingest
     steps:
       - uses: actions/checkout@v4
 
@@ -43,8 +56,9 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          context: applications/${{ matrix.app }}
-          file: applications/${{ matrix.app }}/Dockerfile
+          context: ${{ matrix.context }}
+          file: ${{ matrix.context }}/Dockerfile
+          target: ${{ matrix.target }}
           push: true
           tags: |
             ghcr.io/${{ env.REGISTRY_REPO }}/${{ matrix.app }}:latest

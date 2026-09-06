@@ -3,6 +3,31 @@
 
 logLevel: info
 
+# The control API is how anything asks whether a feed is alive. That question
+# does not belong in ClickHouse and never will: an empty room and a dead
+# camera both produce zero detections, so liveness has to come from the
+# server that owns the stream.
+api: yes
+apiAddress: :9997
+
+# MediaMTX allows the control API from localhost only, which inside a
+# container means the container itself. The port is deliberately NOT
+# published to the host, so widening this to the compose network does not
+# widen it to the machine.
+authInternalUsers:
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: publish
+      - action: read
+      - action: playback
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: api
+
 # RTSP for anything that speaks it, HLS for the browser: a <video> cannot
 # open an RTSP URL, so the dashboard plays the HLS page this server hosts
 # at /<path>/. The rest would bind ports nothing uses.
@@ -13,19 +38,47 @@ hls: true
 # HTTPS and a session cookie the browser only keeps under one, and a
 # looping recording has no latency worth that. A couple of seconds behind
 # is what a wall of tiles wants anyway.
+#
+# This variant is also what puts EXT-X-PROGRAM-DATE-TIME on every segment,
+# in UTC at millisecond precision. That tag is the whole of what lets the
+# browser line detection boxes up with the frame on screen: hls.js exposes
+# it as `playingDate`, and the overlay looks up that instant in ClickHouse.
+# The tag is in the MEDIA playlist (/camNN/main_stream.m3u8), never in the
+# master (/camNN/index.m3u8) - grepping the wrong one finds nothing even
+# when everything is correct.
 hlsVariant: mpegts
 webrtc: false
 srt: false
 moq: false
 
+# Recording is what the clip endpoint reads: an alert names a time range,
+# and the playback server cuts it out of these segments. It records the
+# re-encoded H.264 that the browser already plays, so a clip needs no
+# second transcode, and it keeps a short window because ten cameras of
+# re-encoded 720p come to roughly 15 GB an hour between them.
+record: yes
+recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f
+recordFormat: fmp4
+recordSegmentDuration: 1m
+recordDeleteAfter: 15m
+playback: yes
+playbackAddress: :9996
+
 paths:
   # One block for all ten cameras. A path name prefixed with `~` is a regular
   # expression, so cam3, cam4, ... cam15 all match, and each finds its own
-  # recording at /videos/<path>.mp4 (mounted by compose).
+  # recording at /videos/<path>.mp4 - the whole directory is mounted, not ten
+  # named files, because Docker answers a bind mount whose source is missing
+  # by creating a DIRECTORY there, and ffmpeg then fails with `Is a directory`
+  # on a path that `ls` shows as a file.
   #
   # runOnDemand starts ONE ffmpeg for the path when the first reader arrives;
   # MediaMTX fans that single stream out to every other reader, so ten viewers
-  # still cost one encoder. It is stopped 10s after the last reader leaves.
+  # still cost one encoder. The Savant source adapters are permanent readers,
+  # so in this stack all ten run continuously whether or not a tile is open -
+  # the deliberate ~3-5 CPU cores the pipeline costs. It is stopped 10s after
+  # the last reader leaves, which is what a stack started without the
+  # analytics profile falls back to.
   #
   # -stream_loop -1 loops the file inside ffmpeg, so the process never restarts
   # and the stream has no seam to hide. The recordings are H.265, which no
@@ -36,9 +89,10 @@ paths:
   # -rtsp_transport tcp on the way in is not optional: over UDP this hop drops
   # packets even on loopback, and a dropped RTP packet is a dropped frame.
   #
-  # ponytail: ten ultrafast libx264 encodes when every tile is open. They only
-  # start on demand, but a host that feels it wants a hardware encoder here
-  # (-c:v h264_nvenc / h264_vaapi) rather than a smaller grid.
+  # ponytail: ten ultrafast libx264 encodes, always on once the pipeline runs.
+  # A host that feels it wants a hardware encoder here (-c:v h264_nvenc /
+  # h264_vaapi) rather than a smaller grid - but NVENC on a GeForce caps at
+  # three sessions, and the same GPU is running inference.
   '~^cam\d+$':
     runOnDemand: >
       ffmpeg -hide_banner -loglevel error -stream_loop -1 -re
