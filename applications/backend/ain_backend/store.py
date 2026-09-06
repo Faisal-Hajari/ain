@@ -67,11 +67,6 @@ def query(sql: str, **params: str) -> list[dict]:
 	return [json.loads(line) for line in body.splitlines() if line]
 
 
-def has_events() -> bool:
-	"""Reports whether anything has been ingested yet."""
-	return bool(query('SELECT 1 FROM ain.events LIMIT 1'))
-
-
 def recent_events(
 	element_id: str, branch: str, venue: str, hours: int
 ) -> list[dict]:

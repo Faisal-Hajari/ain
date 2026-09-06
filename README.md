@@ -28,8 +28,7 @@ publish JSON.
 **The schema is not written yet.** The broker and the server are in the
 compose file and the API reads through `applications/backend/ain_backend/
 store.py`, but nothing creates `ain.events`, so every read fails closed and
-each card serves its generated payload instead. `/health` says `dummy` until
-that changes and `clickhouse` after.
+each card serves its generated payload instead.
 
 The row the API expects to read back:
 

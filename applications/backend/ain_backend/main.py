@@ -18,7 +18,6 @@ from ain_backend import catalogue
 from ain_backend import i18n
 from ain_backend import models
 from ain_backend import payloads
-from ain_backend import store
 
 # The filters the frontend stacks onto every data request. UI state
 # (`expanded`, `settings`, ...) also rides in the URL but is not sent,
@@ -75,14 +74,13 @@ app.add_middleware(
 
 @app.get('/health')
 def health() -> dict[str, str]:
-	"""Reports that the service is up, and what is behind it.
+	"""Reports that the service is up.
 
-	Returns:
-		`source` is `clickhouse` once events have been ingested and
-		`dummy` while the payloads are still generated.
+	Answers without touching ClickHouse: this is what the container's
+	healthcheck polls, so it says whether the process is serving and
+	nothing about what is behind it.
 	"""
-	source = 'clickhouse' if store.has_events() else 'dummy'
-	return {'status': 'ok', 'source': source}
+	return {'status': 'ok'}
 
 
 @app.get('/api/dashboard/config', response_model_exclude_none=True)
