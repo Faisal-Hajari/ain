@@ -28,9 +28,10 @@ import fastapi
 import pydantic
 from fastapi.middleware import cors
 
-from ain_api import clips
 from ain_analytics import config
 from ain_analytics import db
+
+from ain_api import clips
 from ain_api import events as events_module
 from ain_api import feeds
 from ain_api import frames

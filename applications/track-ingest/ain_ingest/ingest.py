@@ -19,9 +19,9 @@ from collections.abc import Iterator
 import confluent_kafka
 from savant_rs.utils.serialization import load_message_from_bytes
 
-from ain_analytics import config
-from ain_analytics import db
-
+from ain_analytics import config #to track kafak topic and brokers
+from ain_analytics import db #connection to clickhouse and getting table information
+from ain_analytics import throttle #keeps a broker fault to one line a minute
 _LOG = logging.getLogger('ain_ingest')
 
 # Savant's "this object is not tracked" sentinel. Stored raw it is a 2e19
@@ -100,27 +100,6 @@ def frame_rows(payload: bytes) -> list[tuple]:
 	return rows
 
 
-_warned: set[object] = set()
-
-
-def _warn_once(error: object) -> None:
-	"""Logs each distinct Kafka error the first time it is seen.
-
-	Args:
-		error: The error the consumer reported.
-
-	The common one is UNKNOWN_TOPIC_OR_PART, which is simply "the sink
-	adapter has not created the topic yet" and arrives on every poll.
-	Logged unconditionally it buries everything else at five lines a
-	second.
-	"""
-	code = error.code()
-	if code in _warned:
-		return
-	_warned.add(code)
-	_LOG.warning('kafka: %s (logged once)', error)
-
-
 def _consume(consumer: confluent_kafka.Consumer) -> Iterator[list[tuple]]:
 	"""Yields batches of rows, by size or by age, whichever comes first.
 
@@ -140,7 +119,13 @@ def _consume(consumer: confluent_kafka.Consumer) -> Iterator[list[tuple]]:
 			except Exception:  # noqa: BLE001 - one bad message is not fatal
 				_LOG.exception('undecodable message, skipped')
 		elif message is not None:
-			_warn_once(message.error())
+			# Keyed by error code, so a flood of one does not hide the
+			# first sight of another. The common one is
+			# UNKNOWN_TOPIC_OR_PART - "the sink has not created the
+			# topic yet" - which arrives on every poll and would
+			# otherwise be five lines a second.
+			error = message.error()
+			throttle.warn(_LOG, error.code(), 'kafka: %s', error)
 
 		expired = time.monotonic() >= deadline
 		if batch and (len(batch) >= _BATCH_ROWS or expired):

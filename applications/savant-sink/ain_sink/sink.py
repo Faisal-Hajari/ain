@@ -29,6 +29,7 @@ from savant_rs import zmq
 from savant_rs.utils.serialization import save_message_to_bytes
 
 from ain_analytics import config
+from ain_analytics import throttle
 
 _LOG = logging.getLogger('ain_sink')
 
@@ -39,6 +40,9 @@ _ENDPOINT = os.environ.get(
 # SIGTERM is answered promptly.
 _RECEIVE_TIMEOUT_MS = 1000
 _PARTITIONS = int(os.environ.get('KAFKA_CREATE_TOPIC_NUM_PARTITIONS', '4'))
+# The only thing this queue protects is memory. Named, so the line that
+# reports it filling can say what it filled up to.
+_QUEUE_MAX = int(os.environ.get('KAFKA_QUEUE_MAX_MESSAGES', '100000'))
 
 _running = True
 
@@ -94,7 +98,7 @@ def main() -> int:
 			# The module publishes over PUB/SUB and never blocks, so the
 			# only thing this queue protects is memory: if Kafka is down,
 			# drop rather than grow.
-			'queue.buffering.max.messages': 100_000,
+			'queue.buffering.max.messages': _QUEUE_MAX,
 			'linger.ms': 50,
 		}
 	)
@@ -111,6 +115,7 @@ def main() -> int:
 	)
 
 	relayed = 0
+	dropped = 0
 	try:
 		while _running:
 			result = reader.receive()
@@ -129,6 +134,20 @@ def main() -> int:
 				# keeping up. Dropping metadata is the right answer here:
 				# the alternative is back-pressure onto a GPU pipeline
 				# that cannot pause a live camera anyway.
+				#
+				# Dropping it SILENTLY was not. A hole in the detections
+				# table with nothing in any log to explain it is a bug
+				# somebody goes looking for in the queries instead.
+				# Throttled, because the condition arrives at whatever
+				# rate the module is emitting.
+				dropped += 1
+				throttle.warn(
+					_LOG,
+					'queue-full',
+					'kafka: local queue full at %d messages, dropping '
+					'detections - the broker is not keeping up',
+					_QUEUE_MAX,
+				)
 				producer.poll(0)
 				continue
 			relayed += 1
@@ -136,7 +155,9 @@ def main() -> int:
 	finally:
 		reader.shutdown()
 		producer.flush(10)
-		_LOG.info('stopped after %s messages', relayed)
+		# Both numbers, always: "relayed 4.2M" on its own reads as success
+		# even when a tenth of the run went in the bin.
+		_LOG.info('stopped after %s messages, %s dropped', relayed, dropped)
 	return 0
 
 
