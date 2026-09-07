@@ -97,3 +97,52 @@ def test_the_generator_validates_what_the_service_will(tmp_path):
 
 def test_the_real_config_passes_that_validation():
 	compose_gen.load_config()
+
+
+def test_mediamtx_serves_exactly_the_configured_cameras():
+	"""Two files, one camera list. A camera in one and not the other is a
+	dead adapter or a stream nothing watches."""
+	config = compose_gen.load_config()
+	block = compose_gen.render_paths(config)
+	named = [
+		line.strip().rstrip(':')
+		for line in block.splitlines()
+		if line.startswith('  ') and not line.strip().startswith('#')
+	]
+	assert named == [camera['stream'] for camera in config['cameras'].values()]
+
+
+def test_the_paths_are_named_not_matched_by_a_regex():
+	"""`runOnInit` needs a path that exists when MediaMTX starts.
+
+	A regex path matches nothing until somebody asks for it, which makes
+	the first reader the thing that starts the encoder - and the first
+	reader is a source adapter, which then anchors its clock to a stream
+	that is still spinning up. That measured 3.5-3.7 s of error on every
+	camera, which is where every overlay and clip box was drawn.
+	"""
+	document = yaml.safe_load(compose_gen.apply_paths(compose_gen.load_config()))
+	assert all(
+		not name.startswith('~') for name in document['paths']
+	), 'a regex path cannot be started by runOnInit'
+	defaults = document['pathDefaults']
+	assert 'runOnInit' in defaults
+	# Checked on the parsed document, not the text: the comment above it
+	# explains what runOnDemand did and why it is gone, and should stay.
+	assert 'runOnDemand' not in defaults
+	assert all('runOnDemand' not in (body or {}) for body in document['paths'].values())
+
+
+def test_an_adapter_waits_for_its_stream_before_it_starts(rendered):
+	"""The other half of the same fix: even a started stream needs to
+	settle before an adapter maps it onto wall-clock time."""
+	services = yaml.safe_load(rendered)['services']
+	for name, service in services.items():
+		entrypoint = ' '.join(service['entrypoint'])
+		assert 'wait_for_stream.py' in entrypoint, name
+		assert 'rtsp.sh' in entrypoint, name
+		assert service['environment']['AIN_WAIT_FOR_PATH'], name
+		# And it has to wait for the stream it is actually going to read.
+		assert service['environment']['AIN_WAIT_FOR_PATH'] in (
+			service['environment']['RTSP_URI']
+		), name

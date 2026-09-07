@@ -43,6 +43,9 @@ ConfigError = ain_config.ConfigError
 
 _CAMERAS_YML = _ROOT / 'config' / 'cameras.yml'
 _OUTPUT = _ROOT / 'docker-compose.analytics.yml'
+_MEDIAMTX = _ROOT / 'applications' / 'cameras' / 'mediamtx.yml'
+# Everything from this line to the end of mediamtx.yml belongs to this script.
+_PATHS_MARKER = 'paths:'
 _VIDEO_DIR = _ROOT / 'videos' / 'cctv'
 
 # A recording smaller than this is a truncated download, not a video. The
@@ -174,7 +177,19 @@ def render(config: dict) -> str:
 			'image': (
 				'ghcr.io/insight-platform/savant-adapters-gstreamer@sha256:bc0d9fc73999ee7411183b783df53335af1bebb7161b981f0b175dfc3a3d1d47'
 			),
-			'entrypoint': '/opt/savant/adapters/gst/sources/rtsp.sh',
+			# Not the adapter directly: it waits for its stream to have
+			# been publishing a while first. An adapter that anchors its
+			# clock to a stream that is still starting up bakes a
+			# multi-second timestamp error into its whole session, and
+			# every overlay and clip box then lands on where somebody
+			# had been. See scripts/wait_for_stream.py.
+			'entrypoint': [
+				'/bin/sh',
+				'-c',
+				'python3 /wait_for_stream.py; '
+				'exec /opt/savant/adapters/gst/sources/rtsp.sh',
+			],
+			'volumes': ['./scripts/wait_for_stream.py:/wait_for_stream.py:ro'],
 			'environment': {
 				'RTSP_URI': _Quoted(f'rtsp://cameras:8554/{camera["stream"]}'),
 				'RTSP_TRANSPORT': _Quoted('tcp'),
@@ -182,6 +197,7 @@ def render(config: dict) -> str:
 				# ClickHouse then joins to catalogue.py with no lookup table,
 				# and cameras.yml stays the one place the two namespaces meet.
 				'SOURCE_ID': _Quoted(camera_id),
+				'AIN_WAIT_FOR_PATH': _Quoted(camera['stream']),
 				# DEALER/ROUTER, not PUB/SUB: these frames are H.264 and
 				# PUB/SUB drops without backpressure, so a dropped keyframe
 				# corrupts every frame after it. TCP, not ipc://, because an
@@ -213,7 +229,9 @@ def render(config: dict) -> str:
 			},
 			'depends_on': {
 				'savant-module': {'condition': 'service_healthy'},
-				'cameras': {'condition': 'service_started'},
+				# Healthy, not merely started: the paths have to be
+				# publishing before there is anything to settle.
+				'cameras': {'condition': 'service_healthy'},
 			},
 			'restart': 'unless-stopped',
 		}
@@ -221,6 +239,52 @@ def render(config: dict) -> str:
 		{'services': services}, sort_keys=False, width=100
 	)
 	return _HEADER + '\n' + body
+
+
+def render_paths(config: dict) -> str:
+	"""The MediaMTX `paths:` block for the configured cameras.
+
+	Args:
+		config: The parsed cameras.yml.
+
+	Returns:
+		The block, which replaces the tail of mediamtx.yml.
+
+	One line per camera and nothing else - the ffmpeg command lives once,
+	in `pathDefaults` above it. They have to be NAMED rather than matched
+	by a regex because `runOnInit` needs a path that exists when MediaMTX
+	starts, and a regex matches nothing until somebody asks for it. That
+	ordering is what put every detection 3.5 seconds ahead of its frame.
+	"""
+	lines = [
+		_PATHS_MARKER,
+		'  # GENERATED from config/cameras.yml by scripts/compose_gen.py.',
+		'  # Do not edit: run the generator. `--check` fails when it is stale.',
+	]
+	for camera in config['cameras'].values():
+		lines.append(f'  {camera["stream"]}:')
+	return '\n'.join(lines) + '\n'
+
+
+def apply_paths(config: dict) -> str:
+	"""mediamtx.yml with its paths block brought up to date.
+
+	Args:
+		config: The parsed cameras.yml.
+
+	Returns:
+		The whole file.
+
+	Raises:
+		ConfigError: The file has no paths block to generate into.
+	"""
+	body = _MEDIAMTX.read_text()
+	head, marker, _ = body.partition(f'\n{_PATHS_MARKER}\n')
+	if not marker:
+		raise ConfigError(
+			f'{_MEDIAMTX.name} has no `{_PATHS_MARKER}` line to generate into'
+		)
+	return head + '\n' + render_paths(config)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -242,22 +306,33 @@ def main(argv: list[str] | None = None) -> int:
 
 	try:
 		config = load_config()
-		rendered = render(config)
+		# Two files, one camera list: the adapters that read each stream and
+		# the MediaMTX paths that serve them. A camera added to one and not
+		# the other is a dead adapter or an unwatched stream.
+		wanted = {_OUTPUT: render(config), _MEDIAMTX: apply_paths(config)}
 		if args.check:
-			current = _OUTPUT.read_text() if _OUTPUT.exists() else ''
-			if current != rendered:
+			stale = [
+				path.name
+				for path, body in wanted.items()
+				if (path.read_text() if path.exists() else '') != body
+			]
+			if stale:
 				print(
-					f'{_OUTPUT.name} is out of date - run '
+					f'{", ".join(stale)} out of date - run '
 					'`uv run scripts/compose_gen.py`',
 					file=sys.stderr,
 				)
 				return 1
-			print(f'{_OUTPUT.name} is up to date')
+			print(f'{", ".join(path.name for path in wanted)} are up to date')
 			return 0
 		for line in link_recordings(config, _VIDEO_DIR):
 			print(line)
-		_OUTPUT.write_text(rendered)
-		print(f'wrote {_OUTPUT.name}: {len(config["cameras"])} source adapters')
+		for path, body in wanted.items():
+			path.write_text(body)
+		print(
+			f'wrote {_OUTPUT.name} and {_MEDIAMTX.name}: '
+			f'{len(config["cameras"])} cameras'
+		)
 	except ConfigError as error:
 		print(f'error: {error}', file=sys.stderr)
 		return 1

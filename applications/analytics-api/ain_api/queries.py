@@ -636,7 +636,21 @@ def overlay(
 		One entry per frame, in time order, each carrying its objects.
 		Coordinates are the normalised ones that were stored, so the
 		browser scales them by whatever size the <video> happens to be.
+
+		Timestamps come back in the VIDEO's clock, not the detector's.
+		This is the one seam where detections are paired with pictures -
+		the browser overlay and the burnt-in clip boxes both come through
+		here - so it is the one place the two clocks have to be reconciled.
+		`settings.overlay_clock_offset_ms` is how far apart they are, and
+		is 0 unless `ain_api.calibrate` says otherwise.
 	"""
+	skew = datetime.timedelta(
+		milliseconds=settings.get().overlay_clock_offset_ms
+	)
+	# Selected in the detector's clock, reported in the video's: a window
+	# shifted one way and its answers the other, so the edges do not lose
+	# the frames the shift moves into range.
+	asked = Window(start=window.start - skew, end=window.end - skew)
 	sql = f"""
 		SELECT ts, track_id, label, xc, yc, w, h
 		FROM {db.TABLE}
@@ -647,11 +661,11 @@ def overlay(
 		LIMIT {OVERLAY_MAX_ROWS}
 	"""
 	rows = client.query(
-		sql, parameters={'camera': camera, **window.params()}
+		sql, parameters={'camera': camera, **asked.params()}
 	).result_rows
 	frames: list[dict] = []
 	for ts, track_id, label, xc, yc, w, h in rows:
-		stamp = _iso(ts)
+		stamp = _iso(ts + skew)
 		if not frames or frames[-1]['ts'] != stamp:
 			frames.append({'ts': stamp, 'objects': []})
 		frames[-1]['objects'].append(

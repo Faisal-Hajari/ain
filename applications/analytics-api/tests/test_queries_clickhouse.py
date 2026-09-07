@@ -501,3 +501,36 @@ def test_an_empty_stretch_counts_toward_the_average(client):
 	assert total / sum(b['covered_seconds'] for b in buckets) == pytest.approx(
 		2.0, abs=0.05
 	)
+
+
+def test_overlay_reports_detections_in_the_videos_clock(client, monkeypatch):
+	"""The one seam where boxes are paired with pictures.
+
+	Both the browser overlay and the burnt-in clip boxes come through
+	`overlay()`, so it is the one place the detector's clock and the
+	video's have to be reconciled. Nothing else shifts: a constant offset
+	changes no five-minute bucket, and the stored rows are untouched.
+	"""
+	from ain_analytics import settings
+
+	_insert(client, [(10, 7, 0.5, 0.5)])
+	moment = _START + datetime.timedelta(seconds=10)
+	window = queries.Window(
+		start=moment - datetime.timedelta(seconds=5),
+		end=moment + datetime.timedelta(seconds=5),
+	)
+
+	plain = queries.overlay(client, '03', window)
+	assert len(plain) == 1
+	untouched = datetime.datetime.fromisoformat(plain[0]['ts'])
+
+	monkeypatch.setattr(
+		settings, 'get', lambda: settings.Settings(overlay_clock_offset_ms=1500)
+	)
+	shifted = queries.overlay(client, '03', window)
+	assert len(shifted) == 1
+	moved = datetime.datetime.fromisoformat(shifted[0]['ts'])
+
+	assert (moved - untouched).total_seconds() == 1.5
+	# The same boxes; only when they are said to be has changed.
+	assert shifted[0]['objects'] == plain[0]['objects']

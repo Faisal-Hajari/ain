@@ -34,6 +34,33 @@ and a prune to race. The window can be up to twenty minutes, because a clip
 has to be able to contain the thing it is evidence of - a long-wait alert
 fires on a queue wait measured in minutes.
 
+## When the boxes sit on where somebody was
+
+A source adapter maps its RTSP stream onto wall-clock time once, when the
+session opens, and every timestamp for the life of that session comes off
+that one anchor. Anchor it while the encoder upstream is still starting and
+the error is baked in until the adapter restarts - measured here at 3.5-3.7 s
+on every camera after a cold start, which is where both the browser overlay
+and the burnt-in clip boxes got their boxes from.
+
+Two things stop it, both in `scripts/compose_gen.py`'s output: MediaMTX runs
+the encoders with `runOnInit` so a stream exists before anything reads it,
+and each adapter waits for its path to have been publishing for twenty
+seconds before it connects. Cold-start error went from 3.5-3.7 s to
+0.4-0.5 s.
+
+To check, or after changing cameras or the transcode settings:
+
+```bash
+docker compose exec analytics-api python -m ain_api.calibrate
+```
+
+It needs no detector - movement between frames is ground truth for where a
+person is - and prints what `AIN_OVERLAY_CLOCK_OFFSET_MS` should be. That
+setting is the last resort for whatever latency is left; it shifts
+timestamps only where they are served for DRAWING, and touches no stored row
+and no aggregate.
+
 ## Settings
 
 Every environment variable is declared in

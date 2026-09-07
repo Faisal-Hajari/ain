@@ -150,6 +150,18 @@ class Settings(pydantic_settings.BaseSettings):
 	overlay_max_rows: int = pydantic.Field(50_000, alias='AIN_OVERLAY_MAX_ROWS')
 	# Buckets finer than this make an event out of one person walking past.
 	event_bucket_seconds: int = pydantic.Field(30, alias='AIN_EVENT_BUCKET_SECONDS')
+	# Milliseconds to add to a detection's timestamp when it is served for
+	# DRAWING - the overlay and the burnt-in clip boxes - to line it up with
+	# the video. Zero because the cause was fixed rather than compensated
+	# for: the adapters used to anchor their clocks to a stream that was
+	# still starting, which put every box 3.5s ahead of its frame, and they
+	# now wait for the stream to settle. What is left is real pipeline
+	# latency, under half a second, and measurable at any time with
+	# `python -m ain_api.calibrate`. It does not touch the stored rows or
+	# any aggregate: a constant shift changes no five-minute bucket.
+	overlay_clock_offset_ms: int = pydantic.Field(
+		0, alias='AIN_OVERLAY_CLOCK_OFFSET_MS'
+	)
 
 	# ----------------------------------------------------------- service --
 	cors_origins: str = pydantic.Field('*', alias='AIN_CORS_ORIGINS')

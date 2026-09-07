@@ -91,6 +91,12 @@ applications/ one directory per running service
 videos/cctv/  the recordings the cameras play
 ```
 
+Two of those are the same fix for one bug: MediaMTX starts its encoders with
+`runOnInit` and each Savant adapter waits for its stream to settle before
+connecting, because an adapter that anchors its clock to a stream which is
+still starting puts every detection seconds ahead of the frame it describes.
+`python -m ain_api.calibrate` measures it.
+
 The three analytics services build from the repo root, because each depends on
 `libs/ain_analytics` by relative path and a build context that cannot see the
 library cannot install it.
