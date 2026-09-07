@@ -209,15 +209,34 @@ def _build_kpi(context: _Context) -> models.KpiPayload:
 
 
 def camera_status(seed_key: str) -> dict[str, bool]:
-	"""Rolls which cameras are reporting frames.
+	"""Reports which cameras are up.
 
 	Args:
 		seed_key: The filters, language excluded, as a stable key.
 
 	Returns:
-		True per camera id that is up. Feed health, the downtime chart
-		and the grid all read this one roll, so the three can never
-		disagree about how many cameras are down.
+		True per camera id that is publishing. Real when there is a
+		pipeline to ask - a camera is up when it is one the pipeline is
+		configured for AND its stream server has it - and a stable roll
+		otherwise.
+
+		Feed health, the downtime chart and the grid all read this one
+		answer, so the three can never disagree about how many cameras
+		are down.
+	"""
+	real = live.feed_status()
+	return real if real is not None else rolled_camera_status(seed_key)
+
+
+def rolled_camera_status(seed_key: str) -> dict[str, bool]:
+	"""Invents which cameras are up, stably.
+
+	Args:
+		seed_key: The filters, language excluded, as a stable key.
+
+	Returns:
+		True per camera id that is up. The same key always rolls the
+		same answer, so a card does not flicker between polls.
 	"""
 	rand = _rng('cameras', seed_key)
 	return {
@@ -233,32 +252,22 @@ def _build_camera_status(context: _Context) -> models.StatGroupPayload:
 		context: The request the card is being built for.
 
 	Returns:
-		The three numbers, and behind them the one line worth watching:
-		how many were down. A total that never moves and an online
-		count that is only the total minus this line would say nothing
-		twice. The last point is now, so it carries the number the
-		stats print rather than another roll of the dice.
+		The three numbers, and - only when they are invented - the one
+		line worth watching behind them: how many were down. A total
+		that never moves and an online count that is only the total
+		minus this line would say nothing twice.
+
+		Real feed health carries NO trend. Nothing stores a history of
+		it: the servers that own the streams are asked what is true now,
+		and drawing a random walk beside three numbers that are real
+		would be the same false claim the rest of this design refuses to
+		make, dressed as a chart.
 	"""
-	status = camera_status(context.seed_key)
+	real = live.feed_status()
+	status = real if real is not None else rolled_camera_status(context.seed_key)
 	online = sum(status.values())
 	total = len(status)
 	offline = total - online
-
-	walk = _walk(
-		context.rand,
-		context.x_labels[-_TREND_POINTS:],
-		'offline',
-		0,
-		max(3, offline),
-	)
-	points: list[models.Point] = [
-		{
-			'x': str(point['x']),
-			'offline': min(total, int(_numeric(point, 'offline'))),
-		}
-		for point in walk
-	]
-	points[-1] = {'x': points[-1]['x'], 'offline': offline}
 
 	stats = [
 		models.Stat(
@@ -281,6 +290,26 @@ def _build_camera_status(context: _Context) -> models.StatGroupPayload:
 			),
 		),
 	]
+	if real is not None:
+		return models.StatGroupPayload(stats=stats)
+
+	walk = _walk(
+		context.rand,
+		context.x_labels[-_TREND_POINTS:],
+		'offline',
+		0,
+		max(3, offline),
+	)
+	points: list[models.Point] = [
+		{
+			'x': str(point['x']),
+			'offline': min(total, int(_numeric(point, 'offline'))),
+		}
+		for point in walk
+	]
+	# The last point is now, so it carries the number the stats print
+	# rather than another roll of the dice.
+	points[-1] = {'x': points[-1]['x'], 'offline': offline}
 	return models.StatGroupPayload(
 		stats=stats,
 		trend=models.TrendPayload(

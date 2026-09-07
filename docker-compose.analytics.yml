@@ -76,57 +76,6 @@ services:
       cameras:
         condition: service_started
     restart: unless-stopped
-  savant-source-09:
-    image: ghcr.io/insight-platform/savant-adapters-gstreamer:latest
-    entrypoint: /opt/savant/adapters/gst/sources/rtsp.sh
-    environment:
-      RTSP_URI: 'rtsp://cameras:8554/cam9'
-      RTSP_TRANSPORT: 'tcp'
-      SOURCE_ID: '09'
-      ZMQ_ENDPOINT: 'dealer+connect:tcp://savant-module:5555'
-      USE_ABSOLUTE_TIMESTAMPS: 'True'
-      STALL_ACTION: 'fail'
-      LOGLEVEL: 'info'
-    depends_on:
-      savant-module:
-        condition: service_healthy
-      cameras:
-        condition: service_started
-    restart: unless-stopped
-  savant-source-10:
-    image: ghcr.io/insight-platform/savant-adapters-gstreamer:latest
-    entrypoint: /opt/savant/adapters/gst/sources/rtsp.sh
-    environment:
-      RTSP_URI: 'rtsp://cameras:8554/cam10'
-      RTSP_TRANSPORT: 'tcp'
-      SOURCE_ID: '10'
-      ZMQ_ENDPOINT: 'dealer+connect:tcp://savant-module:5555'
-      USE_ABSOLUTE_TIMESTAMPS: 'True'
-      STALL_ACTION: 'fail'
-      LOGLEVEL: 'info'
-    depends_on:
-      savant-module:
-        condition: service_healthy
-      cameras:
-        condition: service_started
-    restart: unless-stopped
-  savant-source-11:
-    image: ghcr.io/insight-platform/savant-adapters-gstreamer:latest
-    entrypoint: /opt/savant/adapters/gst/sources/rtsp.sh
-    environment:
-      RTSP_URI: 'rtsp://cameras:8554/cam11'
-      RTSP_TRANSPORT: 'tcp'
-      SOURCE_ID: '11'
-      ZMQ_ENDPOINT: 'dealer+connect:tcp://savant-module:5555'
-      USE_ABSOLUTE_TIMESTAMPS: 'True'
-      STALL_ACTION: 'fail'
-      LOGLEVEL: 'info'
-    depends_on:
-      savant-module:
-        condition: service_healthy
-      cameras:
-        condition: service_started
-    restart: unless-stopped
   savant-source-12:
     image: ghcr.io/insight-platform/savant-adapters-gstreamer:latest
     entrypoint: /opt/savant/adapters/gst/sources/rtsp.sh
@@ -134,40 +83,6 @@ services:
       RTSP_URI: 'rtsp://cameras:8554/cam12'
       RTSP_TRANSPORT: 'tcp'
       SOURCE_ID: '12'
-      ZMQ_ENDPOINT: 'dealer+connect:tcp://savant-module:5555'
-      USE_ABSOLUTE_TIMESTAMPS: 'True'
-      STALL_ACTION: 'fail'
-      LOGLEVEL: 'info'
-    depends_on:
-      savant-module:
-        condition: service_healthy
-      cameras:
-        condition: service_started
-    restart: unless-stopped
-  savant-source-13:
-    image: ghcr.io/insight-platform/savant-adapters-gstreamer:latest
-    entrypoint: /opt/savant/adapters/gst/sources/rtsp.sh
-    environment:
-      RTSP_URI: 'rtsp://cameras:8554/cam13'
-      RTSP_TRANSPORT: 'tcp'
-      SOURCE_ID: '13'
-      ZMQ_ENDPOINT: 'dealer+connect:tcp://savant-module:5555'
-      USE_ABSOLUTE_TIMESTAMPS: 'True'
-      STALL_ACTION: 'fail'
-      LOGLEVEL: 'info'
-    depends_on:
-      savant-module:
-        condition: service_healthy
-      cameras:
-        condition: service_started
-    restart: unless-stopped
-  savant-source-15:
-    image: ghcr.io/insight-platform/savant-adapters-gstreamer:latest
-    entrypoint: /opt/savant/adapters/gst/sources/rtsp.sh
-    environment:
-      RTSP_URI: 'rtsp://cameras:8554/cam15'
-      RTSP_TRANSPORT: 'tcp'
-      SOURCE_ID: '15'
       ZMQ_ENDPOINT: 'dealer+connect:tcp://savant-module:5555'
       USE_ABSOLUTE_TIMESTAMPS: 'True'
       STALL_ACTION: 'fail'

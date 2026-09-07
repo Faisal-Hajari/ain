@@ -77,6 +77,12 @@ Each module owns one concern:
 | `live.py` | the same payloads, built from what the cameras saw |
 | `analytics.py` | the client for `analytics-api`, and the fallback around it |
 | `store.py` | alert rules, in SQLite — the one piece of mutable state |
+
+Feed health is the one number here that comes from neither of those. It is not
+in ClickHouse and never will be: an empty room and a dead camera both produce
+zero detections. `analytics-api` asks MediaMTX which paths are publishing, and
+a camera the pipeline is not configured for reports as having no signal —
+because nothing is watching it.
 | `i18n.py` | every localised string that is not an element title |
 | `formatting.py` | display strings and judgement (`severity`, `sentiment`) |
 | `payloads.py` | the placeholder generator, one builder per element type |

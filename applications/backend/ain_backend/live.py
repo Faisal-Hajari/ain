@@ -537,6 +537,33 @@ def _clip_url(event: dict, camera: str) -> str:
 	return f'/api/clips/{event["id"]}.mp4?{query}'
 
 
+def feed_status() -> dict[str, bool] | None:
+	"""Which of the branch's cameras are actually being watched.
+
+	Returns:
+		True per camera id that is publishing, or None when there is no
+		analytics service to ask - in which case the generated roll fills
+		in, as it does everywhere else.
+
+	Two different "no" collapse into one here, deliberately. A camera the
+	pipeline is not configured for has nothing watching it; a configured
+	camera whose stream server cannot be reached cannot be seen either.
+	The service reports those separately, because they are different
+	facts and an operator wants both. The dashboard shows one thing,
+	because a viewer asking "can I see this camera" gets the same answer
+	to both - and the direction of the collapse matters: unwatched
+	reported as online would be the lie, offline is merely the truth
+	stated flatly.
+	"""
+	if not analytics.configured():
+		return None
+	body = analytics.get('/cameras', {})
+	if body is None:
+		return None
+	watched = {entry['id']: entry.get('live') for entry in body['cameras']}
+	return {camera.id: bool(watched.get(camera.id)) for camera in catalogue.CAMERAS}
+
+
 def breaches(
 	spec: catalogue.ElementSpec,
 	comparator: str,

@@ -34,10 +34,15 @@ def test_camera_ids_are_quoted_in_the_generated_file(rendered):
 
 
 def test_source_ids_are_the_backend_ids_not_the_stream_paths(rendered):
+	# The catalogue's '06' and MediaMTX's 'cam6' are two namespaces, and
+	# cameras.yml is the one place they meet. Checked for every camera, so
+	# this holds whichever ones the pipeline is configured for.
+	cameras = compose_gen.load_config()['cameras']
 	services = yaml.safe_load(rendered)['services']
-	adapter = services['savant-source-09']['environment']
-	assert adapter['SOURCE_ID'] == '09'
-	assert adapter['RTSP_URI'].endswith('/cam9')
+	for camera_id, camera in cameras.items():
+		adapter = services[f'savant-source-{camera_id}']['environment']
+		assert adapter['SOURCE_ID'] == camera_id
+		assert adapter['RTSP_URI'].endswith(f'/{camera["stream"]}')
 
 
 def test_absolute_timestamps_are_on(rendered):

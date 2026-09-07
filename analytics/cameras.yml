@@ -26,17 +26,23 @@ kafka:
   brokers: kafka:9092
   topic: ain.people.raw
 
+# WHICH CAMERAS THE PIPELINE RUNS. This list is not the branch's camera
+# roster - catalogue.py has all ten, and the dashboard shows all ten. It is
+# the list that costs something: each one here is a permanent ffmpeg
+# transcode, a decode on the GPU, and a stream through the detector, and ten
+# of them saturated the host. A camera the branch has and this file does not
+# is reported as having no signal, which is what it is: nothing is watching
+# it.
+#
+# Five earns the whole product: 03 and 04 are `indoor` and the entrance line,
+# 12 is the `queue`, 05 is the kitchen and 06 is `outdoor`. Adding one back
+# is a line here plus `uv run analytics/compose_gen.py`.
 cameras:
   '03': {stream: cam3,  description: 'Indoor entrance and lobby / waiting area'}
   '04': {stream: cam4,  description: 'Indoor seating (high-top tables)'}
   '05': {stream: cam5,  description: 'Kitchen - fryer line and hot-food prep'}
   '06': {stream: cam6,  description: 'Outdoor street frontage and parking bays'}
-  '09': {stream: cam9,  description: 'Outdoor parking area and street frontage'}
-  '10': {stream: cam10, description: 'Outdoor rear / side parking and lane'}
-  '11': {stream: cam11, description: 'Register / POS, staff side of the counter'}
   '12': {stream: cam12, description: 'Service counter, customer side'}
-  '13': {stream: cam13, description: 'Back-of-house storage and utility corridor'}
-  '15': {stream: cam15, description: 'Rear service alley and delivery door'}
 
 # A zone is a list of (camera, polygon) parts, summed. There is no cross-camera
 # re-identification, so anybody standing where two parts overlap is counted
@@ -57,13 +63,12 @@ zones:
     # is the same patch - so the counter area belongs to `queue` alone and
     # `indoor` does not claim it.
 
+  # 09 and 10 also look at parking, and their parts are gone with them. A
+  # zone is the sum of its parts, so `outdoor` now means what camera 06 can
+  # see - the street frontage and the bays in front of it.
   outdoor:
     - camera: '06'
       points: [[0.02, 0.32], [0.98, 0.24], [0.98, 1.00], [0.02, 1.00]]
-    - camera: '09'
-      points: [[0.04, 0.30], [0.98, 0.28], [0.98, 1.00], [0.04, 1.00]]
-    - camera: '10'
-      points: [[0.02, 0.28], [0.98, 0.26], [0.98, 1.00], [0.02, 1.00]]
 
   # Where customers actually stand to order. Camera 11 looks at the register
   # from behind the counter and sees only staff, so the queue is camera 12's

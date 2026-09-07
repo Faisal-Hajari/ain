@@ -193,7 +193,7 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		),
 		type=_Type.STAT_GROUP, kind=_Kind.MONITOR,
 		updates=_Cadence.REALTIME, span=2,
-		cameras=('03', '04', '06', '09', '10'),
+		cameras=('03', '04', '06'),
 		unit=i18n.PEOPLE,
 		value_min=8, value_max=60,
 		source=Source(

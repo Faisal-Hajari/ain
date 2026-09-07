@@ -615,3 +615,118 @@ def test_a_ppe_card_with_no_model_shows_a_dash_not_a_zero(monkeypatch):
 	# compliant, and severity is derived from the value.
 	assert built.data.value == live._NO_VALUE
 	assert built.data.severity is models.Severity.INFO
+
+
+def test_an_unwatched_camera_reports_no_signal(monkeypatch):
+	"""The branch has ten cameras; the pipeline watches five.
+
+	The other five are still on the wall and still in the catalogue -
+	they exist - but nothing is looking at them, so the honest tile is a
+	dark one. Reporting them online would be the lie.
+	"""
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(
+		live.analytics,
+		'get',
+		lambda path, params: {
+			'cameras': [
+				{'id': '03', 'stream': 'cam3', 'live': True},
+				{'id': '04', 'stream': 'cam4', 'live': True},
+				{'id': '05', 'stream': 'cam5', 'live': False},
+			]
+		},
+	)
+	status = payloads.camera_status('')
+	assert status['03'] is True
+	assert status['04'] is True
+	# Configured but its stream server does not have it.
+	assert status['05'] is False
+	# Not configured at all: nothing is watching it.
+	assert status['09'] is False
+	assert status['15'] is False
+	# Every camera the catalogue declares is accounted for, so the grid
+	# and the Feed health stats cannot disagree.
+	assert set(status) == {camera.id for camera in catalogue.CAMERAS}
+
+
+def test_a_camera_nobody_watches_carries_no_stream_url(client, monkeypatch):
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(
+		live.analytics,
+		'get',
+		lambda path, params: {
+			'cameras': [{'id': '03', 'stream': 'cam3', 'live': True}]
+		},
+	)
+	feeds = client.get('/api/elements/camera-feeds', params=FILTERS).json()
+	by_id = {feed['id']: feed for feed in feeds['data']['feeds']}
+	assert by_id['03']['status'] == 'online'
+	assert by_id['03']['streamUrl'] == '/cam3/index.m3u8'
+	# Absent, not a URL that would render as a broken player.
+	assert by_id['15']['status'] == 'offline'
+	assert 'streamUrl' not in by_id['15']
+
+
+def test_feed_health_counts_what_the_grid_shows(client, monkeypatch):
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(
+		live.analytics,
+		'get',
+		lambda path, params: {
+			'cameras': [
+				{'id': camera_id, 'stream': f'cam{int(camera_id)}', 'live': True}
+				for camera_id in ('03', '04', '05', '06', '12')
+			]
+		},
+	)
+	stats = client.get('/api/elements/camera-status', params=FILTERS).json()
+	by_id = {stat['id']: stat['value'] for stat in stats['data']['stats']}
+	assert by_id == {'total': '10', 'online': '5', 'offline': '5'}
+
+
+def test_no_pipeline_falls_back_to_the_generated_roll(monkeypatch):
+	monkeypatch.setattr(live.analytics, 'configured', lambda: False)
+	status = payloads.camera_status('branch=olaya')
+	assert set(status) == {camera.id for camera in catalogue.CAMERAS}
+	# Deterministic, so a card does not flicker between polls.
+	assert status == payloads.camera_status('branch=olaya')
+
+
+def test_real_feed_health_draws_no_invented_history(client, monkeypatch):
+	"""Nothing stores a history of which cameras were up.
+
+	The three numbers come from the servers that own the streams and are
+	true now. A random walk beside them would be the same false claim the
+	PPE dash exists to refuse, drawn as a chart instead of written as a
+	number.
+	"""
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(
+		live.analytics,
+		'get',
+		lambda path, params: {
+			'cameras': [{'id': '03', 'stream': 'cam3', 'live': True}]
+		},
+	)
+	payload = client.get(
+		'/api/elements/camera-status', params=FILTERS
+	).json()['data']
+	assert [stat['id'] for stat in payload['stats']] == [
+		'total', 'online', 'offline',
+	]
+	assert 'trend' not in payload
+
+
+def test_invented_feed_health_still_draws_its_line(client, monkeypatch):
+	# Without a pipeline the whole card is a placeholder, and the line is
+	# the only thing on it that moves.
+	monkeypatch.setattr(live.analytics, 'configured', lambda: False)
+	payload = client.get(
+		'/api/elements/camera-status', params=FILTERS
+	).json()['data']
+	assert payload['trend']['series'][0]['id'] == 'offline'
+	# The last point is the number the stats print, not another roll.
+	offline = next(
+		stat['value'] for stat in payload['stats'] if stat['id'] == 'offline'
+	)
+	assert payload['trend']['points'][-1]['offline'] == int(offline)

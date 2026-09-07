@@ -30,10 +30,17 @@ def test_real_config_declares_the_zones_the_kpis_ask_for(settings):
 
 
 def test_camera_ids_keep_their_leading_zero(settings):
-	# '09' parsed as the number 9 stops matching catalogue.py, and every row
-	# in ClickHouse joins on this string.
-	assert '09' in settings.cameras
-	assert 9 not in settings.cameras
+	# '06' parsed as the number 6 stops matching catalogue.py, and every row
+	# in ClickHouse joins on this string. Asserted over the whole roster
+	# rather than one named camera, so it still holds when the list of
+	# cameras the pipeline watches changes.
+	padded = [
+		camera_id for camera_id in settings.cameras if camera_id.startswith('0')
+	]
+	assert padded, 'no zero-padded camera to check'
+	for camera_id in padded:
+		assert isinstance(camera_id, str)
+		assert int(camera_id) not in settings.cameras
 
 
 def test_zone_membership_tests_the_foot_point_not_the_centre(settings):

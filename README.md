@@ -17,9 +17,19 @@ cameras by one MediaMTX server:
 - **RTSP**, `rtsp://localhost:8554/cam3` through `/cam15` (use
   `-rtsp_transport tcp`).
 
-The recordings are H.265, which no browser plays; MediaMTX re-encodes each one
-to H.264. All ten transcodes run continuously, because the pipeline is a
-permanent reader on every path.
+The recordings are H.265, which no browser plays; MediaMTX re-encodes to H.264
+on demand.
+
+**The pipeline watches five of the ten: 03, 04, 05, 06 and 12.** Each one it
+watches is a transcode that never stops, because the Savant adapter is a
+permanent reader - ten of them saturated the host. Those five cover every KPI
+the dashboard computes: `indoor` and the entrance line (03, 04), the `queue`
+(12), the kitchen (05) and `outdoor` (06). The other five stay on the Cameras
+tab and report **no signal**, which is what they are: nothing is looking at
+them, so there is no feed to show and no transcode running for them.
+
+Which five is one list, `cameras:` in `analytics/cameras.yml`. Add one back
+with a line there and `uv run analytics/compose_gen.py`.
 
 ## What computes the numbers
 
@@ -66,7 +76,9 @@ docker compose run --rm --no-deps savant-module --build-engines /opt/savant/modu
 ```
 
 Roughly 5 GB of disk for the images, plus whatever MediaMTX's 15-minute
-recording window costs (~4 GB across ten cameras), plus ClickHouse.
+recording window costs (~2 GB across the five watched cameras), plus
+ClickHouse. Budget about three CPU cores for the transcodes and a couple of
+GB of VRAM.
 
 ## Tests
 

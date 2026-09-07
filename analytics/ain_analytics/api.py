@@ -29,6 +29,7 @@ from ain_analytics import clips
 from ain_analytics import config
 from ain_analytics import db
 from ain_analytics import events as events_module
+from ain_analytics import feeds
 from ain_analytics import queries
 
 # The PPE models are not deployed. These endpoints answer `unavailable`
@@ -213,6 +214,24 @@ def health(response: fastapi.Response) -> dict:
 		'zones': sorted(config.get().zones),
 		'lines': sorted(config.get().lines),
 	}
+
+
+@app.get('/cameras')
+def read_cameras() -> dict:
+	"""Reports which cameras the pipeline is watching, and whether they
+	are publishing.
+
+	Returns:
+		One entry per camera in cameras.yml, with `live` true when
+		MediaMTX has its path ready - which under runOnDemand means a
+		reader is attached, and the readers are the source adapters.
+		`live` is null when MediaMTX itself could not be reached.
+
+		A camera the branch has and this list does not is simply absent:
+		nothing is watching it, and the caller reports it as having no
+		signal.
+	"""
+	return {'cameras': feeds.status(config.get(), feeds.ready_streams())}
 
 
 @app.get('/zones')
