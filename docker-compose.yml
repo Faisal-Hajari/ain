@@ -2,7 +2,7 @@
 # every recording in videos/cctv as a camera, and the computer vision that
 # turns those cameras into the numbers on the dashboard.
 #
-#   uv run analytics/compose_gen.py     # once, and after any cameras.yml edit
+#   uv run scripts/compose_gen.py       # once, and after any cameras.yml edit
 #   docker compose up --build
 #
 # The pipeline half needs an Nvidia GPU and the container toolkit. Without one
@@ -17,7 +17,7 @@
 # from ports that are not published). Cameras used to be a container each on
 # ports 8603-8615, so the path is unchanged and only the port moved.
 
-# One Savant source adapter per camera, generated from analytics/cameras.yml
+# One Savant source adapter per camera, generated from config/cameras.yml
 # so a camera is declared in exactly one place.
 include:
   - docker-compose.analytics.yml
@@ -144,7 +144,7 @@ services:
       # never will, because an empty room and a dead camera produce the same
       # zero detections.
     volumes:
-      - ./mediamtx.yml:/mediamtx.yml:ro
+      - ./applications/cameras/mediamtx.yml:/mediamtx.yml:ro
       # The whole directory, not ten named files. A bind mount whose source
       # does not exist is answered by Docker CREATING A DIRECTORY there; `ls`
       # then shows what looks like a file and ffmpeg fails several layers
@@ -213,7 +213,7 @@ services:
       - SOURCE_TIMEOUT=60
       - SAVANT_STATUS_FILEPATH=/tmp/savant/status
     volumes:
-      - ./analytics/module.yml:/opt/savant/module.yml:ro
+      - ./applications/savant-module/module.yml:/opt/savant/module.yml:ro
       # TensorRT engines take 5-15 minutes to build and are specific to this
       # GPU, this batch size and this precision. Host-mounted so a restart
       # does not rebuild them.
@@ -238,13 +238,18 @@ services:
   # imports a module the image does not ship, and the runner behind it calls
   # a method the image's own Message class does not have - so the relay is
   # ours, on the same base image, publishing the same bytes. See
-  # ain_analytics/sink.py.
+  # applications/savant-sink/ain_sink/sink.py.
   savant-kafka-sink:
     build:
-      context: ./analytics
-      target: ingest
-    image: ain-track-ingest:dev
-    command: python -m ain_analytics.sink
+      # The repo root, because the service depends on libs/ain_analytics by
+      # path and a context that cannot see the library cannot install it.
+      context: .
+      dockerfile: applications/savant-sink/Dockerfile
+    image: ain-savant-sink:dev
+    volumes:
+      # The geometry, read-only: this service only needs the Kafka
+      # settings out of it. The API is the one that writes.
+      - ./config/cameras.yml:/src/config/cameras.yml:ro
     environment:
       - ZMQ_ENDPOINT=sub+connect:tcp://savant-module:5556
       - KAFKA_BROKERS=kafka:9092
@@ -264,9 +269,13 @@ services:
   # 0..1, maps the untracked sentinel to 0, and batches the inserts.
   track-ingest:
     build:
-      context: ./analytics
-      target: ingest
+      context: .
+      dockerfile: applications/track-ingest/Dockerfile
     image: ain-track-ingest:dev
+    volumes:
+      # The geometry, read-only: this service only needs the Kafka
+      # settings out of it. The API is the one that writes.
+      - ./config/cameras.yml:/src/config/cameras.yml:ro
     environment:
       - KAFKA_BROKERS=kafka:9092
       - KAFKA_TOPIC=ain.people.raw
@@ -290,8 +299,8 @@ services:
   # ain_backend ships English and Arabic and owns every one of those.
   analytics-api:
     build:
-      context: ./analytics
-      target: api
+      context: .
+      dockerfile: applications/analytics-api/Dockerfile
     image: ain-analytics-api:dev
     ports:
       # Loopback: ain_backend reaches this in-network on
@@ -311,7 +320,7 @@ services:
     # (uid 10002) against a file owned by the host user. The file is mode 664,
     # so joining its group is enough - and is a much smaller grant than
     # running the API as root or as the host uid. Override AIN_CONFIG_GID if
-    # `stat -c %g analytics/cameras.yml` is not 1000 on your machine.
+    # `stat -c %g config/cameras.yml` is not 1000 on your machine.
     group_add:
       - "${AIN_CONFIG_GID:-1000}"
     volumes:
@@ -319,10 +328,10 @@ services:
       # a container restart - never a GPU restart, which is the whole reason
       # no geometry is in module.yml. Written in place rather than renamed
       # into position, because renaming onto a bind-mounted FILE is EBUSY.
-      - ./analytics/cameras.yml:/app/cameras.yml
+      - ./config/cameras.yml:/src/config/cameras.yml
       # Bind-mounted like the config it edits, so tweaking the editor is a
       # container restart rather than an image rebuild.
-      - ./analytics/editor.html:/app/editor.html:ro
+      - ./applications/analytics-api/editor.html:/src/applications/analytics-api/editor.html:ro
       - clips:/clips
     depends_on:
       clickhouse:

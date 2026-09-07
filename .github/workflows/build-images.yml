@@ -22,21 +22,27 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Every image the stack ships. `context` is where its Dockerfile
-        # lives and `target` which stage to build; the analytics image has
-        # two, because the ingest consumer has to be built on the Savant
-        # adapters image (savant-rs is not on PyPI) and the API does not.
+        # Every image the stack ships. The three analytics services build
+        # from the REPO ROOT rather than from their own directory: each
+        # depends on libs/ain_analytics by relative path, so the library has
+        # to be inside the build context. The backend and frontend depend on
+        # nothing outside themselves and keep the tighter context.
         include:
           - app: backend
             context: applications/backend
+            file: applications/backend/Dockerfile
           - app: frontend
             context: applications/frontend
+            file: applications/frontend/Dockerfile
           - app: analytics-api
-            context: analytics
-            target: api
+            context: .
+            file: applications/analytics-api/Dockerfile
           - app: track-ingest
-            context: analytics
-            target: ingest
+            context: .
+            file: applications/track-ingest/Dockerfile
+          - app: savant-sink
+            context: .
+            file: applications/savant-sink/Dockerfile
     steps:
       - uses: actions/checkout@v4
 
@@ -57,8 +63,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
-          file: ${{ matrix.context }}/Dockerfile
-          target: ${{ matrix.target }}
+          file: ${{ matrix.file }}
           push: true
           tags: |
             ghcr.io/${{ env.REGISTRY_REPO }}/${{ matrix.app }}:latest

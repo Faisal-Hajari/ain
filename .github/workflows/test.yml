@@ -67,10 +67,16 @@ jobs:
         with:
           enable-cache: true
 
-      # The ingest tests need savant-rs, which is not on PyPI: they run in
-      # the ingest image, which is where it lives, and are skipped here.
-      - name: pytest
-        working-directory: analytics
+      # cameras.yml and the ClickHouse client, shared by all three services.
+      # The generator's tests live here too - see the module docstring.
+      - name: pytest the shared library
+        working-directory: libs/ain_analytics
+        run: uv run --all-extras pytest -q
+
+      # The ingest and sink tests need savant-rs, which is not on PyPI: they
+      # run in the ingest image, which is where it lives.
+      - name: pytest the query layer
+        working-directory: applications/analytics-api
         env:
           CLICKHOUSE_HOST: localhost
           CLICKHOUSE_PORT: 8123
@@ -81,7 +87,7 @@ jobs:
       # regenerated would otherwise ship a stack missing a camera - or worse,
       # one whose SOURCE_ID no longer matches the catalogue.
       - name: the generated compose file is up to date
-        run: uv run analytics/compose_gen.py --check
+        run: uv run scripts/compose_gen.py --check
 
   frontend:
     name: frontend

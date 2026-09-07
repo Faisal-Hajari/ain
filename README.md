@@ -3,7 +3,7 @@
 A video analytics dashboard, and the computer vision behind it.
 
 ```bash
-uv run analytics/compose_gen.py     # once, and after any cameras.yml edit
+uv run scripts/compose_gen.py     # once, and after any cameras.yml edit
 docker compose up --build
 ```
 
@@ -28,8 +28,8 @@ the dashboard computes: `indoor` and the entrance line (03, 04), the `queue`
 tab and report **no signal**, which is what they are: nothing is looking at
 them, so there is no feed to show and no transcode running for them.
 
-Which five is one list, `cameras:` in `analytics/cameras.yml`. Add one back
-with a line there and `uv run analytics/compose_gen.py`.
+Which five is one list, `cameras:` in `config/cameras.yml`. Add one back
+with a line there and `uv run scripts/compose_gen.py`.
 
 ## What computes the numbers
 
@@ -58,13 +58,36 @@ boxes. Zones, lines, thresholds, dwell and counting all happen in SQL over the
 stored rows, which is what makes the geometry editable without touching the GPU
 and what makes it possible to move the entrance line and recompute last month.
 
-`analytics/cameras.yml` is the only place any of that geometry lives. It drives
+`config/cameras.yml` is the only place any of that geometry lives. It drives
 the compose generator, the query layer and the browser overlay, and editing it
-is a restart of `analytics-api` - never of the module.
+never restarts the module.
 
 **To draw the zones rather than guess at coordinates**, open
 <http://localhost:8100/editor>: a still from each camera with the shapes it
-already has drawn over it, click to add new ones, and the YAML to paste back.
+already has drawn over it, click to add new ones, and a Save button that writes
+`config/cameras.yml` back - comments and all.
+
+## Layout
+
+```
+config/       cameras.yml - the geometry, read by four things and owned by none
+scripts/      compose_gen.py - writes the per-camera half of the compose stack
+libs/         ain_analytics - what more than one service needs: the config
+              loader and the ClickHouse client
+applications/ one directory per running service
+  backend/          the dashboard's API, and every string a human reads
+  frontend/         React, the only thing that renders
+  analytics-api/    the KPI query layer, and the geometry editor
+  track-ingest/     Kafka -> ClickHouse
+  savant-sink/      the module's ZeroMQ output -> Kafka
+  savant-module/    module.yml, the only thing on the GPU
+  cameras/          mediamtx.yml, the RTSP and HLS server
+videos/cctv/  the recordings the cameras play
+```
+
+The three analytics services build from the repo root, because each depends on
+`libs/ain_analytics` by relative path and a build context that cannot see the
+library cannot install it.
 
 ## Requirements
 

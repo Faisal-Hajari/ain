@@ -183,7 +183,7 @@ queue still growing. A full room with a shrinking queue is a rush that is
 clearing, and alerting on it is alerting on good news.
 
 Capacity is configuration and lives beside the polygon it belongs to, in
-`analytics/cameras.yml`. A zone that declares none cannot be alerted on
+`config/cameras.yml`. A zone that declares none cannot be alerted on
 proportionally, and asking is a `400` rather than a guessed denominator.
 
 ### Unavailable values

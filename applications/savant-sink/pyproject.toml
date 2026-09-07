@@ -1,0 +1,16 @@
+[project]
+name = "ain-savant-sink"
+version = "0.1.0"
+description = "Relays the module's ZeroMQ output onto Kafka"
+requires-python = ">=3.10"
+# This should have been the stock adapters.python.sinks.kafka_redis container.
+# See ain_sink/sink.py for why it is not. Same savant-rs constraint as the
+# ingest: the wire format is versioned, so the image is built on the Savant
+# adapters base and the Dockerfile does the installing.
+dependencies = [
+    "ain-analytics",
+    "confluent-kafka>=2.2.0",
+]
+
+[tool.uv.sources]
+ain-analytics = { path = "../../libs/ain_analytics", editable = true }
