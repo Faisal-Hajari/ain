@@ -1,7 +1,14 @@
-# The whole stack: the dashboard, the API it talks to, and one RTSP server
-# serving every recording in videos/cctv as a camera.
+# The whole stack: the dashboard, the API it talks to, one RTSP server serving
+# every recording in videos/cctv as a camera, and the computer vision that
+# turns those cameras into the numbers on the dashboard.
 #
+#   uv run scripts/compose_gen.py       # once, and after any cameras.yml edit
 #   docker compose up --build
+#
+# The pipeline half needs an Nvidia GPU and the container toolkit. Without one
+# `savant-module` crash-loops and the dashboard falls back to generated data -
+# it degrades rather than failing, which is also what happens while the
+# TensorRT engine is building on a first run.
 #
 # The dashboard is then on http://localhost:3000 and every camera on the one
 # server: HLS at http://localhost:8888/camNN/ (what the tiles play, proxied
@@ -9,6 +16,11 @@
 # rtsp://localhost:8554/camNN (use -rtsp_transport tcp; RTP over UDP goes out
 # from ports that are not published). Cameras used to be a container each on
 # ports 8603-8615, so the path is unchanged and only the port moved.
+
+# One Savant source adapter per camera, generated from config/cameras.yml
+# so a camera is declared in exactly one place.
+include:
+  - docker-compose.analytics.yml
 
 services:
   backend:
@@ -20,6 +32,18 @@ services:
       # nginx proxies /api from the same origin, so the browser never makes a
       # cross-origin call; these are for hitting the API from a dev server.
       AIN_CORS_ORIGINS: "http://localhost:5173,http://localhost:3000"
+      # Where the real numbers come from. Unset, or unreachable, and every
+      # KPI falls back to the generated data it has always served - which is
+      # what keeps a card readable while the pipeline is still warming up.
+      AIN_ANALYTICS_URL: "http://analytics-api:8100"
+      # Alert rules are the one piece of mutable state this service owns.
+      # SQLite on a volume rather than a dict in the process: a dict does
+      # not survive a restart and two replicas would disagree.
+      AIN_STORE_PATH: /data/alerts.db
+    volumes:
+      - alert_rules:/data
+    depends_on:
+      - analytics-api
     restart: unless-stopped
 
   # Single-node KRaft broker - no ZooKeeper, no volume. The topic is the seam
@@ -39,6 +63,11 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # A buffer between the GPU and ClickHouse, not a store: ClickHouse is
+      # the store. The default seven days of ~400 messages/sec would sit in
+      # the container's writable layer, which no volume backs.
+      KAFKA_LOG_RETENTION_HOURS: 2
+      KAFKA_LOG_RETENTION_BYTES: 2147483648
     healthcheck:
       test: ["CMD", "/opt/kafka/bin/kafka-topics.sh",
              "--bootstrap-server", "localhost:9092", "--list"]
@@ -59,7 +88,11 @@ services:
       CLICKHOUSE_USER: ain
       CLICKHOUSE_PASSWORD: ain
     ports:
-      - "8123:8123"
+      # Loopback, for the same reason as analytics-api: the only clients are
+      # track-ingest and analytics-api, in-network, and this is the
+      # detections store behind a dev password. Not flagged in review, but
+      # it is the same exposure and the larger one.
+      - "127.0.0.1:8123:8123"
     volumes:
       # A bind mount rather than a named volume, so the data sits in the repo
       # where it can be inspected. `docker compose down -v` does not clear a
@@ -99,16 +132,276 @@ services:
     ports:
       - "8554:8554"
       - "8888:8888"
+      # Playback server - where the clip endpoint cuts its time ranges from.
+      # Bound to loopback: the only consumer is analytics-api, in-network on
+      # http://cameras:9996, and this port hands out two hours of recorded
+      # footage to anyone who asks. Localhost keeps it reachable for a
+      # curl while developing and off the network entirely.
+      - "127.0.0.1:9996:9996"
+      # 9997, the control API, is deliberately not published: it is reachable
+      # inside the compose network - which is where a feed-health check runs -
+      # and nowhere else. Feed liveness does not belong in ClickHouse and
+      # never will, because an empty room and a dead camera produce the same
+      # zero detections.
     volumes:
-      - ./mediamtx.yml:/mediamtx.yml:ro
-      - ./videos/cctv/cam3_2026-07-27_21-57-55.mp4:/videos/cam3.mp4:ro
-      - ./videos/cctv/cam4_2026-07-27_22-58-12.mp4:/videos/cam4.mp4:ro
-      - ./videos/cctv/cam5_2026-07-27_19-55-22.mp4:/videos/cam5.mp4:ro
-      - ./videos/cctv/cam6_2026-07-27_20-56-11.mp4:/videos/cam6.mp4:ro
-      - ./videos/cctv/cam9_2026-07-27_21-57-55.mp4:/videos/cam9.mp4:ro
-      - ./videos/cctv/cam10_2026-07-27_19-55-22.mp4:/videos/cam10.mp4:ro
-      - ./videos/cctv/cam11_2026-07-27_22-58-12.mp4:/videos/cam11.mp4:ro
-      - ./videos/cctv/cam12_2026-07-27_19-55-22.mp4:/videos/cam12.mp4:ro
-      - ./videos/cctv/cam13_2026-07-27_19-55-22.mp4:/videos/cam13.mp4:ro
-      - ./videos/cctv/cam15_2026-07-27_19-55-22.mp4:/videos/cam15.mp4:ro
+      - ./applications/cameras/mediamtx.yml:/mediamtx.yml:ro
+      # The whole directory, not ten named files. A bind mount whose source
+      # does not exist is answered by Docker CREATING A DIRECTORY there; `ls`
+      # then shows what looks like a file and ffmpeg fails several layers
+      # away with `Is a directory`. compose_gen.py puts a camN.mp4 symlink
+      # beside each recording, and fails loudly when one is missing.
+      - ./videos/cctv:/videos:ro
+      - recordings:/recordings
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:9997/v3/paths/list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
     restart: unless-stopped
+
+  # ---------------------------------------------------------------------
+  # The pipeline. Frames in on the left, rows in ClickHouse on the right.
+  #
+  #   MediaMTX --RTSP--> savant-source-NN --ZMQ--> savant-module (GPU)
+  #     --ZMQ--> savant-kafka-sink --> kafka --> track-ingest --> clickhouse
+  #
+  # The organising principle is that the pipeline is dumb: it detects people,
+  # tracks them and emits boxes. Zones, lines, thresholds, dwell and counting
+  # all happen in SQL over the stored rows, which is what makes the geometry
+  # editable without touching the GPU and what makes it possible to move the
+  # entrance line and recompute last month's footfall.
+  # ---------------------------------------------------------------------
+
+  # The only GPU consumer, and one container rather than one per camera:
+  # there is one GPU, so the models load once and ten streams are batched
+  # through them.
+  savant-module:
+    # Pinned by digest, not :latest. savant-rs serialises the messages this
+    # module emits and the ingest deserialises them, the format is versioned,
+    # and the Dockerfile's whole argument for building ingest on the adapters
+    # image is that the two ends then agree. Floating tags on both ends is
+    # exactly what breaks that - and a Savant release also invalidates the
+    # TensorRT engine on disk. Savant 0.6.1 / savant-rs 1.15.1 / DS 7.1.
+    image: ghcr.io/insight-platform/savant-deepstream@sha256:bb85edbd25d872a7e4900ee8902ffa7f6ead297792e19f77dc4e4b3f605bc585
+    command: /opt/savant/module.yml
+    runtime: nvidia
+    environment:
+      - MODULE_NAME=ain-people
+      - LOGLEVEL=info
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      # The module binds and the adapters connect. DEALER/ROUTER on the way
+      # in, not PUB/SUB: the sources carry H.264, and PUB/SUB drops without
+      # backpressure - a dropped keyframe corrupts every frame after it.
+      #
+      # TCP rather than ipc://, though the docs prefer ipc:// for a local
+      # hop. An ipc endpoint is a file in a shared volume, and when the
+      # module rebinds it the adapters are left connected to a socket that
+      # no longer exists: they hand over their first message, never get an
+      # ack, and sit there while their queues fill. Restarting the module
+      # alone wedged the whole pipeline that way. TCP has no file to go
+      # stale, so a reconnect is just a reconnect - and these frames are
+      # H.264, not the raw ones ipc:// exists to keep off the wire.
+      - ZMQ_SRC_ENDPOINT=router+bind:tcp://0.0.0.0:5555
+      # PUB/SUB on the way out is fine and deliberate: this side is metadata
+      # only, every message is independent, and a stalled consumer must not
+      # be able to stall the GPU.
+      - ZMQ_SINK_ENDPOINT=pub+bind:tcp://0.0.0.0:5556
+      # An RTSP source that is reconnecting takes longer than the 10s default
+      # to come back, and an evicted source loses its track ids.
+      - SOURCE_TIMEOUT=60
+      - SAVANT_STATUS_FILEPATH=/tmp/savant/status
+    volumes:
+      - ./applications/savant-module/module.yml:/opt/savant/module.yml:ro
+      # TensorRT engines take 5-15 minutes to build and are specific to this
+      # GPU, this batch size and this precision. Host-mounted so a restart
+      # does not rebuild them.
+      - savant_models:/models
+      - savant_downloads:/downloads
+    healthcheck:
+      # The image ships /opt/savant/healthcheck.sh, which is exactly this
+      # grep - and is not marked executable, so calling it fails with a
+      # permission error that reads like a GPU problem. The module writes
+      # `running` into the status file once the pipeline is up.
+      test: ["CMD", "grep", "-q", "running", "/tmp/savant/status"]
+      interval: 10s
+      timeout: 5s
+      # The first start builds the engine, which is why this waits so long
+      # before it starts calling the module unhealthy.
+      retries: 10
+      start_period: 900s
+    restart: unless-stopped
+
+  # This was meant to be the stock `adapters.python.sinks.kafka_redis`
+  # container. That adapter is broken in savant-adapters-py 0.6.x - it
+  # imports a module the image does not ship, and the runner behind it calls
+  # a method the image's own Message class does not have - so the relay is
+  # ours, on the same base image, publishing the same bytes. See
+  # applications/savant-sink/ain_sink/sink.py.
+  savant-kafka-sink:
+    build:
+      # The repo root, because the service depends on libs/ain_analytics by
+      # path and a context that cannot see the library cannot install it.
+      context: .
+      dockerfile: applications/savant-sink/Dockerfile
+    image: ain-savant-sink:dev
+    volumes:
+      # The geometry, read-only: this service only needs the Kafka
+      # settings out of it. The API is the one that writes.
+      - ./config/cameras.yml:/src/config/cameras.yml:ro
+    environment:
+      - ZMQ_ENDPOINT=sub+connect:tcp://savant-module:5556
+      - KAFKA_BROKERS=kafka:9092
+      - KAFKA_TOPIC=ain.people.raw
+      - KAFKA_CREATE_TOPIC_NUM_PARTITIONS=4
+      - LOGLEVEL=INFO
+    depends_on:
+      kafka:
+        condition: service_healthy
+      savant-module:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # The consumer that is easy to overlook and is not optional. ClickHouse's
+  # Kafka table engine reads JSONEachRow, Avro, Protobuf and CapnProto; the
+  # topic carries none of those. This deserialises, normalises the boxes to
+  # 0..1, maps the untracked sentinel to 0, and batches the inserts.
+  track-ingest:
+    build:
+      context: .
+      dockerfile: applications/track-ingest/Dockerfile
+    image: ain-track-ingest:dev
+    volumes:
+      # The geometry, read-only: this service only needs the Kafka
+      # settings out of it. The API is the one that writes.
+      - ./config/cameras.yml:/src/config/cameras.yml:ro
+    environment:
+      - KAFKA_BROKERS=kafka:9092
+      - KAFKA_TOPIC=ain.people.raw
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_USER=ain
+      - CLICKHOUSE_PASSWORD=ain
+      # Half a second, not one: at ~250 rows/sec that is still ~125 rows an
+      # insert, and ClickHouse coalesces them server-side anyway. The whole
+      # metadata path has to stay ahead of the video path or the browser
+      # overlay has nothing to draw by the time a frame is on screen.
+      - AIN_INGEST_BATCH_SECONDS=0.5
+      - LOGLEVEL=INFO
+    depends_on:
+      kafka:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    restart: unless-stopped
+
+
+  # Where rendered clips live. The alternative was a directory inside the
+  # analytics API's container, which made that service stateful for
+  # something that is not state: retention became a cache limit to tune and
+  # a prune to race, a restart lost every clip, and the mp4 travelled
+  # through two services to reach a browser that could have fetched it
+  # directly. A bucket with a lifecycle rule does all three properly.
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=ain
+      - MINIO_ROOT_PASSWORD=ainsecret
+    ports:
+      # The browser fetches clips straight from here on a presigned link, so
+      # unlike the other back-end services this one is reachable from the
+      # host. Loopback only: presigned or not, these are recordings of
+      # identifiable people.
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  # The zone editor: one HTML file and a reverse proxy, and no application
+  # code at all. Separate from the API because it is a separate thing - a
+  # page somebody opens now and then to move a polygon, versus the query
+  # layer the dashboard hits continuously.
+  geometry-editor:
+    build:
+      context: .
+      dockerfile: applications/geometry-editor/Dockerfile
+    image: ain-geometry-editor:dev
+    ports:
+      - "127.0.0.1:8101:8101"
+    volumes:
+      # Bind-mounted so editing the page is a browser reload rather than an
+      # image rebuild.
+      - ./applications/geometry-editor/editor.html:/usr/share/nginx/html/editor.html:ro
+    depends_on:
+      analytics-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+ # Numbers and units, never a formatted string, a severity or a sentence:
+  # ain_backend ships English and Arabic and owns every one of those.
+  analytics-api:
+    build:
+      context: .
+      dockerfile: applications/analytics-api/Dockerfile
+    image: ain-analytics-api:dev
+    ports:
+      # Loopback: ain_backend reaches this in-network on
+      # http://analytics-api:8100, and nothing outside the host should be
+      # querying detections or opening the zone editor. Still
+      # http://localhost:8100/editor from this machine.
+      - "127.0.0.1:8100:8100"
+    environment:
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_USER=ain
+      - CLICKHOUSE_PASSWORD=ain
+      - AIN_PLAYBACK_URL=http://cameras:9996
+      # Where the editor cuts its still frames from.
+      - AIN_RTSP_URL=rtsp://cameras:8554
+      - AIN_S3_ENDPOINT=http://minio:9000
+      # What a BROWSER can reach. A presigned URL is signed for one host, so
+      # signing with `minio:9000` produces links only this network can open.
+      - AIN_S3_PUBLIC_ENDPOINT=http://localhost:9000
+      - AIN_S3_ACCESS_KEY=ain
+      - AIN_S3_SECRET_KEY=ainsecret
+    # The editor's Save writes cameras.yml, and this container runs as `ain`
+    # (uid 10002) against a file owned by the host user. The file is mode 664,
+    # so joining its group is enough - and is a much smaller grant than
+    # running the API as root or as the host uid. Override AIN_CONFIG_GID if
+    # `stat -c %g config/cameras.yml` is not 1000 on your machine.
+    group_add:
+      - "${AIN_CONFIG_GID:-1000}"
+    volumes:
+      # Writable, and live: a zone edit is a save in the browser, and at worst
+      # a container restart - never a GPU restart, which is the whole reason
+      # no geometry is in module.yml. Written in place rather than renamed
+      # into position, because renaming onto a bind-mounted FILE is EBUSY.
+      - ./config/cameras.yml:/src/config/cameras.yml
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/health').read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  alert_rules:
+  savant_models:
+  savant_downloads:
+  recordings:
+  # Rendered clips. The bucket's lifecycle rule expires them, so nothing
+  # in the API prunes.
+  minio_data:

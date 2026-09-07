@@ -1,0 +1,24 @@
+[project]
+name = "ain-track-ingest"
+version = "0.1.0"
+description = "Kafka consumer: savant-rs messages in, ClickHouse rows out"
+requires-python = ">=3.10"
+# savant-rs is NOT here and cannot be: it is not published on PyPI, and its
+# message format is versioned against the adapter that produced the bytes.
+# The image is built on the Savant adapters base, which is the only place the
+# two ends are guaranteed to agree - so this file describes the service for a
+# reader and for local tooling, and the Dockerfile is what actually installs.
+dependencies = [
+    "ain-analytics",
+    "confluent-kafka>=2.2.0",
+]
+
+[tool.uv.sources]
+ain-analytics = { path = "../../libs/ain_analytics", editable = true }
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

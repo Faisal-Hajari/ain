@@ -1,0 +1,29 @@
+[project]
+name = "ain-analytics-api"
+version = "0.1.0"
+description = "The KPI query layer over ClickHouse, and the geometry editor"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "ain-analytics[write]",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+    # Clips are drawn on the CPU. headless: no GUI libraries in the image.
+    "opencv-python-headless>=4.10",
+    "numpy>=1.26",
+    "boto3>=1.43.89",
+]
+
+[tool.uv.sources]
+ain-analytics = { path = "../../libs/ain_analytics", editable = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

@@ -28,6 +28,11 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 RUN useradd --create-home --uid 10001 ain
 
+# The alert-rule database lives here. Docker seeds an empty named volume from
+# the image, ownership included, so creating it as `ain` now is what lets a
+# non-root service write to it later.
+RUN mkdir -p /data && chown ain:ain /data
+
 COPY --from=builder --chown=ain:ain /app/.venv /app/.venv
 COPY --from=builder --chown=ain:ain /app/ain_backend /app/ain_backend
 

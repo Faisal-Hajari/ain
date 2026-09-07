@@ -169,10 +169,18 @@ export type ElementPayload =
   | { type: 'line' | 'histogram'; data: SeriesPayload }
   | { type: 'camera-grid'; data: CameraGridPayload }
 
+/**
+ * Where a card's numbers came from. The two are the same shapes on purpose,
+ * which is exactly why the wire says which: a card that fell back because a
+ * query timed out looks identical to one that measured something.
+ */
+export type DataSource = 'cameras' | 'generated'
+
 export type ElementResponse = ElementPayload & {
   elementId: string
   /** ISO timestamp of the underlying data, not of the request. */
   updatedAt: string
+  source: DataSource
 }
 
 export interface Instance {
@@ -190,6 +198,7 @@ export interface InstanceLog {
   elementId: string
   title: string
   total: number
+  source: DataSource
   instances: Instance[]
 }
 
@@ -221,10 +230,71 @@ export interface AlertRule {
   summary: string
   /** Pre-formatted, e.g. "Created today". */
   createdLabel: string
+  /**
+   * How the rule has actually done over the window in view. Absent when
+   * there is nothing behind the monitor to evaluate it against - which is
+   * not the same as zero, and must not print the same way.
+   */
+  breaches?: number
+  /** Pre-formatted, e.g. "Fired 3 times". */
+  statusLabel?: string
+  severity?: Severity
 }
 
 export interface AlertRuleDraft {
   monitorId: string
   comparator: AlertComparator
   threshold: number
+}
+
+/* ---------------------------------------------------------------- overlay */
+
+/**
+ * One detected object, in coordinates normalised 0..1 against the camera's
+ * own frame. Nothing on the wire is in pixels: the tile is whatever size the
+ * grid makes it, and the stream may be re-encoded at another resolution.
+ */
+export interface OverlayObject {
+  trackId: number
+  label: string
+  xc: number
+  yc: number
+  w: number
+  h: number
+}
+
+export interface OverlayFrame {
+  /** ISO 8601, UTC. The same clock as the HLS EXT-X-PROGRAM-DATE-TIME. */
+  ts: string
+  objects: OverlayObject[]
+}
+
+/** One window of detections, fetched per few seconds rather than per frame. */
+export interface OverlayResponse {
+  camera: string
+  start: string
+  end: string
+  frames: OverlayFrame[]
+}
+
+/** One camera's share of a zone or a counting line. */
+export interface GeometryPart {
+  camera: string
+  name?: string | null
+  /** [x, y] pairs, normalised 0..1. */
+  points: [number, number][]
+}
+
+export interface NamedGeometry {
+  name: string
+  kind: 'polygon' | 'line'
+  /** How many people the zone holds. What a "passed 90%" alert is 90% of. */
+  capacity?: number
+  parts: GeometryPart[]
+}
+
+/** Every zone and line, as configured. Not a measurement: configuration. */
+export interface ZonesResponse {
+  zones: NamedGeometry[]
+  lines: NamedGeometry[]
 }

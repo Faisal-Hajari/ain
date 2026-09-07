@@ -215,12 +215,27 @@ Payload = (
 )
 
 
+class DataSource(enum.StrEnum):
+	"""Where a card's numbers came from.
+
+	The two are the same shapes and are meant to be interchangeable, which
+	is exactly why the wire has to say which one it is: a card that fell
+	back because a query timed out looks identical to one that measured
+	something, and a dashboard whose whole claim is "these are the real
+	numbers" cannot afford that to be invisible.
+	"""
+
+	CAMERAS = 'cameras'
+	GENERATED = 'generated'
+
+
 class ElementResponse(Model):
 	"""One card's payload, discriminated by `type`."""
 
 	element_id: str
 	updated_at: str
 	type: ElementType
+	source: DataSource
 	data: Payload
 
 
@@ -242,7 +257,68 @@ class InstanceLog(Model):
 	element_id: str
 	title: str
 	total: int
+	source: DataSource
 	instances: list[Instance]
+
+
+class OverlayObject(Model):
+	"""One detected object, in coordinates normalised against its frame."""
+
+	track_id: int
+	label: str
+	xc: float
+	yc: float
+	w: float
+	h: float
+
+
+class OverlayFrame(Model):
+	"""Every object seen at one instant."""
+
+	ts: str
+	objects: list[OverlayObject]
+
+
+class OverlayResponse(Model):
+	"""One window of detections for one camera.
+
+	Passed through from the analytics service, but through these models
+	rather than verbatim: that service speaks snake_case and this wire is
+	camelCase, and `track_id` reaching the browser as-is is a box label
+	reading "person undefined".
+	"""
+
+	camera: str
+	start: str
+	end: str
+	frames: list[OverlayFrame]
+
+
+class GeometryPart(Model):
+	"""One camera's share of a zone or a counting line."""
+
+	camera: str
+	name: str | None = None
+	points: list[list[float]]
+
+
+class NamedGeometry(Model):
+	"""A zone or a line, and the shapes that make it up."""
+
+	name: str
+	kind: Literal['polygon', 'line']
+	# How many people the zone holds, when it declares one. Carried
+	# because it is what a "passed 90%" alert is 90% OF - a reader who
+	# wants to check that arithmetic should not need a second lookup.
+	capacity: int | None = None
+	parts: list[GeometryPart]
+
+
+class ZonesResponse(Model):
+	"""Every zone and line, as configured."""
+
+	zones: list[NamedGeometry]
+	lines: list[NamedGeometry]
 
 
 class AlertMonitor(Model):
@@ -273,6 +349,13 @@ class AlertRule(Model):
 	unit: str | None = None
 	summary: str
 	created_label: str
+	# How the rule has actually done over the window in view. Absent when
+	# there is no pipeline behind the monitor to evaluate it against, which
+	# is different from "it has not fired": one is unknown, the other is
+	# zero, and a card must not print them the same way.
+	breaches: int | None = None
+	status_label: str | None = None
+	severity: Severity | None = None
 
 
 class AlertRuleList(Model):

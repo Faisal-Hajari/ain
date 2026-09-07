@@ -101,6 +101,25 @@ def delta_between(
 	)
 
 
+def count_severity(count: float) -> models.Severity:
+	"""Judges how bad a number of occurrences is.
+
+	Args:
+		count: How many times the thing happened in the window.
+
+	Returns:
+		The severity that colours the card. Nothing happened is good
+		news; a couple is worth a look; more than that is the shift
+		going wrong. This is judgement, which is why it is here and not
+		in the service that produced the number.
+	"""
+	if count <= 0:
+		return models.Severity.OK
+	if count <= 2:
+		return models.Severity.WARN
+	return models.Severity.CRITICAL
+
+
 def rolled_severity(rand: random.Random) -> models.Severity:
 	"""Draws a plausible severity for a dummy element."""
 	roll = rand.random()

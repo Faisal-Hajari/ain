@@ -1,0 +1,145 @@
+# Config for the `cameras` service in docker-compose.yml.
+# Reference: https://github.com/bluenviron/mediamtx/blob/v1.20.1/mediamtx.yml
+
+logLevel: info
+
+# The control API is how anything asks whether a feed is alive. That question
+# does not belong in ClickHouse and never will: an empty room and a dead
+# camera both produce zero detections, so liveness has to come from the
+# server that owns the stream.
+api: yes
+apiAddress: :9997
+
+# MediaMTX allows the control API from localhost only, which inside a
+# container means the container itself - and analytics-api asks it, from a
+# different container, which is what needs widening.
+#
+# Widened to Docker's private ranges rather than to every address: 9997 is
+# not published to the host at all, so this is already contained, and a
+# permission scoped to where the caller actually lives costs nothing to
+# write and does not have to be revisited if that ever changes.
+authInternalUsers:
+  - user: any
+    pass:
+    ips: []
+    permissions:
+    - action: publish
+    - action: read
+    - action: playback
+  - user: any
+    pass:
+    ips: ['127.0.0.1', '::1', '172.16.0.0/12', '192.168.0.0/16', '10.0.0.0/8']
+    permissions:
+    - action: api
+
+# RTSP for anything that speaks it, HLS for the browser: a <video> cannot
+# open an RTSP URL, so the dashboard plays the HLS page this server hosts
+# at /<path>/. The rest would bind ports nothing uses.
+rtmp: false
+hls: true
+
+# MPEG-TS segments rather than the default Low-Latency HLS: LL-HLS wants
+# HTTPS and a session cookie the browser only keeps under one, and a
+# looping recording has no latency worth that. A couple of seconds behind
+# is what a wall of tiles wants anyway.
+#
+# This variant is also what puts EXT-X-PROGRAM-DATE-TIME on every segment,
+# in UTC at millisecond precision. That tag is the whole of what lets the
+# browser line detection boxes up with the frame on screen: hls.js exposes
+# it as `playingDate`, and the overlay looks up that instant in ClickHouse.
+# The tag is in the MEDIA playlist (/camNN/main_stream.m3u8), never in the
+# master (/camNN/index.m3u8) - grepping the wrong one finds nothing even
+# when everything is correct.
+hlsVariant: mpegts
+webrtc: false
+srt: false
+moq: false
+
+# Recording is what the clip endpoint reads: an alert names a time range,
+# and the playback server cuts it out of these segments. It records the
+# re-encoded H.264 that the browser already plays, so a clip needs no
+# second transcode. Two hours of it: long enough that every event the
+# dashboard shows for the current shift has video behind it, short enough to
+# stay a few gigabytes. Anything older than this has no clip, and the
+# instance log stops offering one rather than handing out a dead link.
+record: yes
+recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f
+recordFormat: fmp4
+recordSegmentDuration: 1m
+recordDeleteAfter: 2h
+playback: yes
+playbackAddress: :9996
+
+# How every camera is served. The command lives once, in pathDefaults,
+# and the list of paths below is generated from config/cameras.yml.
+# Each camera finds its recording at /videos/<path>.mp4 - the whole directory
+# is mounted, not named files, because Docker answers a bind mount whose
+# source is missing by creating a DIRECTORY there, and ffmpeg then fails with
+# `Is a directory` on a path that `ls` shows as a file.
+#
+# runOnInit, NOT runOnDemand, and the difference is worth four seconds of
+# wrong. runOnDemand starts the encoder when the first reader arrives - and
+# the first reader is a Savant source adapter, which anchors its absolute
+# timestamps while the encoder is still starting up. That anchor error is
+# baked in for the life of the adapter's session: measured at 3.5-3.7s on
+# every camera after a cold start, which put every overlay box and every
+# clip box on where somebody HAD been. Reconnecting an adapter to an
+# already-running stream measured -0.3s. So the stream is started when
+# MediaMTX starts, and is steady long before anything reads it.
+#
+# The adapters are permanent readers anyway, so nothing runs that would not
+# have run - the encoders were already continuous.
+#
+# -stream_loop -1 loops the file inside ffmpeg, so the process never restarts
+# and the stream has no seam to hide. The recordings are H.265, which no
+# browser plays over HLS, so this re-encodes to H.264; they are already
+# 720p, so there is nothing to scale.
+#
+# -r 15 is not cosmetic. These files average 15 fps but DECLARE
+# r_frame_rate 50 - the shortest gap between two frames, not the rate - and
+# with no -r ffmpeg takes that declaration as the output rate and duplicates
+# frames to fill it. Every one of those duplicates is then a frame encoded
+# here, decoded on the GPU, run through the detector, published to Kafka and
+# stored in ClickHouse: measured at 42-46 fps per camera before this line,
+# about three times the work for no extra information. -g 15 then puts a
+# keyframe every second, which is what lets HLS cut one-second segments.
+#
+# -crf 28 is what makes clips possible. `ultrafast` at the default quality
+# spends about 5.5 Mbit/s a camera, and MediaMTX records this same stream -
+# 12.6 GB an hour across five cameras, which is why the recording window
+# had to be fifteen minutes, which is why every event older than that had
+# no clip behind it.
+#
+# CRF and nothing else, deliberately. Adding -maxrate/-bufsize on top cut
+# the same amount again and engaged VBV rate control, which buffers: the
+# frame the adapter received carried a timestamp ~5s older than the one
+# MediaMTX stamped on the HLS segment holding it, so the detections landed
+# BEHIND the video instead of ahead of it and the browser overlay had
+# nothing to draw at the live edge. Constant-quality encoding has no such
+# buffer.
+#
+# -rtsp_transport tcp on the way in is not optional: over UDP this hop drops
+# packets even on loopback, and a dropped RTP packet is a dropped frame.
+#
+# ponytail: ten ultrafast libx264 encodes, always on once the pipeline runs.
+# A host that feels it wants a hardware encoder here (-c:v h264_nvenc /
+# h264_vaapi) rather than a smaller grid - but NVENC on a GeForce caps at
+# three sessions, and the same GPU is running inference.
+pathDefaults:
+  runOnInit: >
+    ffmpeg -hide_banner -loglevel error -stream_loop -1 -re
+    -i /videos/$MTX_PATH.mp4 -an -c:v libx264 -preset ultrafast
+    -tune zerolatency -fps_mode cfr -r 15 -g 15
+    -crf 28
+    -f rtsp -rtsp_transport tcp
+    rtsp://localhost:$RTSP_PORT/$MTX_PATH
+  runOnInitRestart: yes
+
+paths:
+  # GENERATED from config/cameras.yml by scripts/compose_gen.py.
+  # Do not edit: run the generator. `--check` fails when it is stale.
+  cam3:
+  cam4:
+  cam5:
+  cam6:
+  cam12:

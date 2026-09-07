@@ -1,0 +1,103 @@
+# The only thing on the GPU, and deliberately the dumbest part of the stack:
+# it decodes ten streams, finds people, tracks them, and emits boxes. Zones,
+# lines, thresholds, dwell and counting all happen downstream in SQL, because
+# OmegaConf interpolation in this file resolves once at module init - anything
+# geometric here would cost a pipeline restart per zone edit, and would make
+# recomputing last month's footfall against a moved line impossible.
+#
+# Build the TensorRT engine before the first run. It takes 5-15 minutes and is
+# specific to this GPU, this batch size and this precision:
+#
+#   docker compose run --rm --entrypoint python savant-module \
+#       -m savant.entrypoint --build-engines /opt/savant/module.yml
+#
+# /models and /downloads are host-mounted so it survives a restart.
+
+name: ain-people
+
+parameters:
+  # Ten, with five cameras - measured, not inherited. Matching this to the
+  # camera count looks tidier and costs 2.4 seconds of end-to-end latency:
+  # at 5 the detections landed 4.3s behind the frame, at 10 they land 1.8s
+  # behind, with every pipeline queue empty in both cases. The overlay only
+  # works while the metadata stays AHEAD of the video, so the headroom is
+  # the point.
+  #
+  # Changing it means rebuilding the TensorRT engine - the batch size is
+  # baked into the plan, and an engine is only valid for the size it was
+  # built with.
+  batch_size: 10
+  # 40 ms. The default 2000 us is tuned for files; with live sources a batch
+  # never fills in that time and throughput collapses.
+  batched_push_timeout: 40000
+  # Five live cameras, plus room to add some back: dead-but-not-yet-evicted
+  # streams count against this and the pipeline aborts when it is exceeded.
+  max_parallel_streams: 16
+  # (SOURCE_TIMEOUT is set in compose, not here: it lives under
+  # pipeline.source.properties, and the default 10s eviction is too eager for
+  # an RTSP source that is reconnecting.)
+
+  # NOTE: `output_frame` is deliberately absent, and that absence is the most
+  # important line in this file. With no output_frame the module encodes
+  # nothing, draws nothing, consumes no NVENC session (a GeForce caps at
+  # three, and this host has one GPU doing inference), and no geometry_base
+  # divisibility rule applies to the frame sizes. Only metadata leaves.
+  # Adding an output_frame block later starts an encoder silently.
+  #
+  # There is no draw_func either: overlays are drawn in the browser from the
+  # stored boxes, which is what makes them toggleable per viewer, editable by
+  # dragging, and free.
+  #
+  # And no pyfunc: there is nothing for one to do.
+
+pipeline:
+  elements:
+    - element: nvinfer@detector
+      name: detector
+      model:
+        remote:
+          url: s3://savant-data/models/yolo11n/yolo11n.zip
+          checksum_url: s3://savant-data/models/yolo11n/yolo11n.md5
+          parameters:
+            endpoint: https://eu-central-1.linodeobjects.com
+        format: onnx
+        model_file: yolo11n.onnx
+        batch_size: ${parameters.batch_size}
+        workspace_size: 6144
+        input:
+          shape: [3, 640, 640]
+          scale_factor: 0.0039215697906911373
+          maintain_aspect_ratio: true
+          symmetric_padding: true
+        output:
+          layer_names: [output0]
+          # Required for YOLOv11: the converter reads the class count out of
+          # this rather than the layer shape.
+          num_detected_classes: 80
+          converter:
+            # savant.converter.yolo, not savant.converter.yolo_v8 - which does
+            # not exist. v8 and v11 share this converter.
+            module: savant.converter.yolo
+            class_name: TensorToBBoxConverter
+            kwargs:
+              confidence_threshold: 0.25
+              nms_iou_threshold: 0.45
+              top_k: 300
+          objects:
+            # COCO class 0. Everything not listed here is dropped permanently,
+            # which is the point: 79 other classes would be 79x the rows.
+            - class_id: 0
+              label: person
+              selector:
+                module: savant.selector.detector
+                class_name: MinMaxSizeBBoxSelector
+                # Below this a "person" at 720p is noise on a tiled floor.
+                kwargs: {min_width: 20, min_height: 40}
+
+    - element: nvtracker
+      properties:
+        ll-lib-file: /opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so
+        ll-config-file: /opt/nvidia/deepstream/deepstream/samples/configs/deepstream-app/config_tracker_NvSORT.yml
+        # Both must be multiples of 32.
+        tracker-width: 960
+        tracker-height: 544

@@ -14,9 +14,11 @@ from fastapi import responses
 from fastapi.middleware import cors
 
 from ain_backend import alerts
+from ain_backend import analytics
 from ain_backend import catalogue
 from ain_backend import i18n
 from ain_backend import models
+from ain_backend import settings
 from ain_backend import payloads
 
 # The filters the frontend stacks onto every data request. UI state
@@ -66,7 +68,7 @@ app = fastapi.FastAPI(
 
 app.add_middleware(
 	cors.CORSMiddleware,
-	allow_origins=os.environ.get('AIN_CORS_ORIGINS', '*').split(','),
+	allow_origins=settings.get().cors_origin_list,
 	allow_methods=['GET', 'POST', 'DELETE'],
 	allow_headers=['*'],
 )
@@ -75,7 +77,10 @@ app.add_middleware(
 @app.get('/health')
 def health() -> dict[str, str]:
 	"""Reports that the service is up, and what is behind it."""
-	return {'status': 'ok', 'source': 'dummy'}
+	return {
+		'status': 'ok',
+		'source': 'analytics' if analytics.configured() else 'dummy',
+	}
 
 
 @app.get('/api/dashboard/config', response_model_exclude_none=True)
@@ -134,6 +139,100 @@ def read_instances(element_id: str, scope: Scope) -> models.InstanceLog:
 		) from error
 
 
+@app.get('/api/zones', response_model_exclude_none=True)
+def read_zones() -> models.ZonesResponse:
+	"""Returns the zone and line shapes drawn over the camera tiles.
+
+	Returns:
+		The geometry, normalised 0..1 against each camera's frame, or an
+		empty document when no analytics service is wired up. This is
+		configuration rather than a measurement, which is why it is not
+		part of any element payload: an editor drags these, and nothing
+		about that touches the GPU.
+
+	Raises:
+		fastapi.HTTPException: Never; an absent service is empty, not an
+			error.
+	"""
+	body = analytics.get('/zones', {}) or {'zones': [], 'lines': []}
+	return models.ZonesResponse.model_validate(body)
+
+
+@app.get('/api/overlay', response_model_exclude_none=True)
+def read_overlay(
+	camera: str, start: str | None = None, end: str | None = None
+) -> models.OverlayResponse:
+	"""Returns the boxes to draw over one camera, for one short window.
+
+	Args:
+		camera: The camera id, as the catalogue names it.
+		start: ISO 8601, inclusive.
+		end: ISO 8601, exclusive. At most a minute after `start`.
+
+	Returns:
+		One entry per frame, in normalised coordinates. The browser
+		fetches a window of these every few seconds and, on each frame,
+		draws the one nearest `hls.playingDate` - the wall-clock instant
+		of the frame actually on screen, which HLS carries as
+		EXT-X-PROGRAM-DATE-TIME.
+
+	Raises:
+		fastapi.HTTPException: No analytics service is wired up, or it
+			refused the window.
+	"""
+	body = analytics.get(
+		'/overlay', {'camera': camera, 'start': start, 'end': end}
+	)
+	if body is None:
+		raise fastapi.HTTPException(
+			status_code=503, detail='no detections available'
+		)
+	return models.OverlayResponse.model_validate(body)
+
+
+@app.get('/api/clips/{event_id}.mp4')
+def read_clip(
+	event_id: str, camera: str, start: str, end: str | None = None
+) -> responses.Response:
+	"""Redirects to the video behind one alert, boxes burnt in.
+
+	Args:
+		event_id: The occurrence, which names the object.
+		camera: Which camera to cut from.
+		start: ISO 8601, inclusive.
+		end: ISO 8601, exclusive.
+
+	Returns:
+		A redirect to a presigned link on the object store. The bytes
+		used to be streamed through here from the analytics service,
+		which put a megabyte of video through two Python processes to
+		reach a browser that can fetch it directly. This route stays
+		because the URL is built lazily for every row of an instance
+		log - asking the analytics service to render each one just to
+		put a link in a table would render clips nobody opens.
+
+		Unlike the live view these boxes are drawn into the frames: a
+		file saved from here and opened in a player has to carry its
+		own annotation.
+
+	Raises:
+		fastapi.HTTPException: There is no recording for that window -
+			MediaMTX keeps a short one - or no analytics service.
+	"""
+	body = analytics.get(
+		f'/clips/{event_id}',
+		{'camera': camera, 'start': start, 'end': end},
+		timeout=settings.get().clip_timeout_seconds,
+	)
+	if body is None or not body.get('url'):
+		raise fastapi.HTTPException(
+			status_code=404, detail='no clip for that window'
+		)
+	# 307 rather than 302: the method has to survive, and a cached
+	# redirect would outlive the signature on the URL it points at.
+	return responses.RedirectResponse(body['url'], status_code=307)
+
+
 @app.get('/api/alerts/monitors', response_model_exclude_none=True)
 def read_monitors(scope: Scope) -> models.AlertMonitorList:
 	"""Returns every monitor an alert rule can be built on."""
@@ -142,8 +241,11 @@ def read_monitors(scope: Scope) -> models.AlertMonitorList:
 
 @app.get('/api/alerts/rules', response_model_exclude_none=True)
 def read_rules(scope: Scope) -> models.AlertRuleList:
-	"""Returns every stored rule, localised at read time."""
-	return alerts.list_rules(scope.locale)
+	"""Returns every stored rule, localised and evaluated at read time."""
+	return alerts.list_rules(
+		scope.locale,
+		payloads.resolve_range(scope.range, catalogue.today()),
+	)
 
 
 @app.post(

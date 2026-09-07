@@ -7,3 +7,8 @@ __pycache__/
 .claude/
 
 clickhouse-data/
+
+# Scratch: frames pulled out of a recording while tuning zone polygons, and
+# clips rendered while testing the clip endpoint.
+frames/
+*.mp4

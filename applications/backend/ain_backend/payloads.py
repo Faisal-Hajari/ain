@@ -5,8 +5,12 @@ card never flickers between polls. The seed deliberately excludes the
 language: switching locale must re-label a card without moving a single
 number.
 
-This module is the seam. Replacing it with real read models leaves the
-catalogue, the contract and the routes untouched.
+This module is the fallback, not the only answer. `live` builds the same
+shapes from what the cameras saw and `build_element` tries that first;
+this takes over whenever an element declares no source, the analytics
+service is unset or unreachable, or it has nothing stored for the window.
+That is what keeps a card readable while the pipeline is still building
+its TensorRT engine.
 """
 
 import dataclasses
@@ -18,6 +22,7 @@ from collections.abc import Callable, Sequence
 from ain_backend import catalogue
 from ain_backend import formatting
 from ain_backend import i18n
+from ain_backend import live
 from ain_backend import models
 
 _DURATION = formatting.ValueFormat.DURATION
@@ -203,16 +208,46 @@ def _build_kpi(context: _Context) -> models.KpiPayload:
 	)
 
 
-def camera_status(seed_key: str) -> dict[str, bool]:
-	"""Rolls which cameras are reporting frames.
+@dataclasses.dataclass(frozen=True)
+class CameraStatus:
+	"""Which cameras are up, and whether anything actually looked."""
+
+	up: dict[str, bool]
+	measured: bool
+
+
+def camera_status(seed_key: str) -> CameraStatus:
+	"""Reports which cameras are up.
 
 	Args:
 		seed_key: The filters, language excluded, as a stable key.
 
 	Returns:
-		True per camera id that is up. Feed health, the downtime chart
-		and the grid all read this one roll, so the three can never
-		disagree about how many cameras are down.
+		True per camera id that is publishing, and whether that came
+		from the pipeline. Real when there is one to ask - a camera is
+		up when it is configured AND its stream server has it - and a
+		stable roll otherwise.
+
+		Feed health, the downtime chart and the grid all read this one
+		answer, so the three can never disagree about how many cameras
+		are down - and `measured` travels with it, so no caller has to
+		re-derive the fallback and risk disagreeing about that too.
+	"""
+	real = live.feed_status()
+	if real is not None:
+		return CameraStatus(up=real, measured=True)
+	return CameraStatus(up=rolled_camera_status(seed_key), measured=False)
+
+
+def rolled_camera_status(seed_key: str) -> dict[str, bool]:
+	"""Invents which cameras are up, stably.
+
+	Args:
+		seed_key: The filters, language excluded, as a stable key.
+
+	Returns:
+		True per camera id that is up. The same key always rolls the
+		same answer, so a card does not flicker between polls.
 	"""
 	rand = _rng('cameras', seed_key)
 	return {
@@ -228,32 +263,22 @@ def _build_camera_status(context: _Context) -> models.StatGroupPayload:
 		context: The request the card is being built for.
 
 	Returns:
-		The three numbers, and behind them the one line worth watching:
-		how many were down. A total that never moves and an online
-		count that is only the total minus this line would say nothing
-		twice. The last point is now, so it carries the number the
-		stats print rather than another roll of the dice.
+		The three numbers, and - only when they are invented - the one
+		line worth watching behind them: how many were down. A total
+		that never moves and an online count that is only the total
+		minus this line would say nothing twice.
+
+		Real feed health carries NO trend. Nothing stores a history of
+		it: the servers that own the streams are asked what is true now,
+		and drawing a random walk beside three numbers that are real
+		would be the same false claim the rest of this design refuses to
+		make, dressed as a chart.
 	"""
-	status = camera_status(context.seed_key)
+	answer = camera_status(context.seed_key)
+	status = answer.up
 	online = sum(status.values())
 	total = len(status)
 	offline = total - online
-
-	walk = _walk(
-		context.rand,
-		context.x_labels[-_TREND_POINTS:],
-		'offline',
-		0,
-		max(3, offline),
-	)
-	points: list[models.Point] = [
-		{
-			'x': str(point['x']),
-			'offline': min(total, int(_numeric(point, 'offline'))),
-		}
-		for point in walk
-	]
-	points[-1] = {'x': points[-1]['x'], 'offline': offline}
 
 	stats = [
 		models.Stat(
@@ -276,6 +301,26 @@ def _build_camera_status(context: _Context) -> models.StatGroupPayload:
 			),
 		),
 	]
+	if answer.measured:
+		return models.StatGroupPayload(stats=stats)
+
+	walk = _walk(
+		context.rand,
+		context.x_labels[-_TREND_POINTS:],
+		'offline',
+		0,
+		max(3, offline),
+	)
+	points: list[models.Point] = [
+		{
+			'x': str(point['x']),
+			'offline': min(total, int(_numeric(point, 'offline'))),
+		}
+		for point in walk
+	]
+	# The last point is now, so it carries the number the stats print
+	# rather than another roll of the dice.
+	points[-1] = {'x': points[-1]['x'], 'offline': offline}
 	return models.StatGroupPayload(
 		stats=stats,
 		trend=models.TrendPayload(
@@ -415,7 +460,7 @@ def _camera_label(camera_id: str, locale: i18n.Locale) -> str:
 
 def _build_camera_grid(context: _Context) -> models.CameraGridPayload:
 	"""Every camera tile, with its status and stream."""
-	status = camera_status(context.seed_key)
+	status = camera_status(context.seed_key).up
 	feeds = []
 	for camera in catalogue.CAMERAS:
 		online = status[camera.id]
@@ -492,17 +537,31 @@ def build_element(
 		range_value: The raw `range` filter.
 
 	Returns:
-		The response, with a `type` matching the config's.
+		The response, with a `type` matching the config's. Built from
+		what the cameras saw when the element declares a source and the
+		analytics service has something to say, and from the generated
+		data otherwise - which is what keeps a card readable while the
+		pipeline is still warming up.
 
 	Raises:
 		UnknownElementError: The catalogue has no such element.
 	"""
 	spec = _spec_or_raise(element_id)
 	context = _context(spec, seed_key, locale, range_value)
+	built = live.build(context)
+	if built is not None:
+		return models.ElementResponse(
+			element_id=spec.id,
+			updated_at=built.updated_at,
+			type=spec.type,
+			source=models.DataSource.CAMERAS,
+			data=built.data,
+		)
 	return models.ElementResponse(
 		element_id=spec.id,
 		updated_at=_updated_at(spec.updates),
 		type=spec.type,
+		source=models.DataSource.GENERATED,
 		data=_BUILDERS[spec.type](context),
 	)
 
@@ -527,6 +586,9 @@ def build_instance_log(
 	"""
 	spec = _spec_or_raise(element_id)
 	context = _context(spec, seed_key, locale, range_value, 'instances')
+	real = live.instances(context)
+	if real is not None:
+		return real
 	rand = context.rand
 	total = rand.randint(3, 12)
 	cameras = spec.cameras or ('03',)
@@ -550,6 +612,7 @@ def build_instance_log(
 		element_id=spec.id,
 		title=context.text(spec.title),
 		total=total,
+		source=models.DataSource.GENERATED,
 		instances=instances,
 	)
 

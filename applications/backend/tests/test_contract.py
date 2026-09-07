@@ -4,13 +4,19 @@ The frontend has no fallbacks, so these assert the shapes it indexes
 into rather than merely that a route answers.
 """
 
+import dataclasses
+
 import fastapi.testclient
 import pytest
 
 from ain_backend import alerts
 from ain_backend import catalogue
+from ain_backend import i18n
+from ain_backend import live
 from ain_backend import main
 from ain_backend import models
+from ain_backend import payloads
+from ain_backend import store
 
 FILTERS = {'branch': 'olaya', 'venue': 'cafe', 'range': 'today'}
 
@@ -18,7 +24,7 @@ FILTERS = {'branch': 'olaya', 'venue': 'cafe', 'range': 'today'}
 @pytest.fixture(name='client')
 def client_fixture() -> fastapi.testclient.TestClient:
 	"""Returns a client bound to the app, with an empty rule store."""
-	alerts.RULES.clear()
+	store.clear()
 	return fastapi.testclient.TestClient(main.app)
 
 
@@ -341,3 +347,502 @@ def test_feed_health_carries_the_downtime_over_the_window(client):
 	assert trend['points']
 	for point in trend['points']:
 		assert 0 <= point['offline'] <= total
+
+
+def test_a_rule_survives_a_new_connection(client):
+	"""The store is a database, not a dict in the process."""
+	created = client.post(
+		'/api/alerts/rules',
+		params=FILTERS,
+		json={
+			'monitorId': 'queue-length',
+			'comparator': 'above',
+			'threshold': 12,
+		},
+	)
+	assert created.status_code == 201
+	# A different thread opens its own connection, which is where a
+	# per-connection in-memory database would lose the row.
+	rows = store.rows()
+	assert [row['id'] for row in rows] == [created.json()['id']]
+	assert rows[0]['monitor_id'] == 'queue-length'
+	assert rows[0]['comparator'] == 'above'
+
+
+def test_deleting_a_rule_empties_the_store(client):
+	created = client.post(
+		'/api/alerts/rules',
+		params=FILTERS,
+		json={
+			'monitorId': 'queue-length',
+			'comparator': 'above',
+			'threshold': 12,
+		},
+	)
+	client.delete(f'/api/alerts/rules/{created.json()["id"]}')
+	assert store.rows() == []
+
+
+def test_a_rule_with_nothing_behind_it_reports_no_status():
+	"""Unknown is not zero.
+
+	A rule the pipeline cannot evaluate must not read as "did not fire":
+	one says nothing happened, the other says nobody looked, and a chip
+	saying the first about the second is worse than no chip.
+	"""
+	label, severity = alerts._status(None, i18n.Locale.EN)
+	assert label is None
+	assert severity is None
+
+
+def test_a_rule_that_did_not_fire_says_so():
+	label, severity = alerts._status(0, i18n.Locale.EN)
+	assert label == 'Not fired'
+	assert severity is models.Severity.OK
+
+
+def test_a_rule_that_fired_a_lot_is_critical():
+	label, severity = alerts._status(7, i18n.Locale.EN)
+	assert '7' in label
+	assert severity is models.Severity.CRITICAL
+
+
+def test_a_duration_rule_is_converted_to_the_seconds_analytics_speaks(
+	monkeypatch,
+):
+	"""Every duration in the catalogue is minutes; analytics is seconds."""
+	sent: dict = {}
+
+	def fake_get(path, params):
+		sent.update({'path': path, **params})
+		return {'count': 2}
+
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(live.analytics, 'get', fake_get)
+	spec = catalogue.ELEMENTS_BY_ID['queue-wait-time']
+	assert live.breaches(spec, 'above', 5, 'today') == 2
+	assert sent['path'] == '/events'
+	assert sent['threshold'] == 300
+	assert sent['zone'] == 'queue'
+	assert sent['metric'] == 'dwell'
+
+
+def test_a_split_stat_group_is_evaluated_over_its_first_zone(monkeypatch):
+	sent: dict = {}
+
+	def fake_get(path, params):
+		sent.update(params)
+		return {'count': 0}
+
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(live.analytics, 'get', fake_get)
+	spec = catalogue.ELEMENTS_BY_ID['live-occupancy']
+	assert live.breaches(spec, 'above', 40, 'today') == 0
+	assert sent['zone'] == 'indoor'
+	assert sent['threshold'] == 40
+
+
+def test_the_overlay_speaks_the_wire_contract_not_the_services(monkeypatch):
+	"""snake_case in, camelCase out.
+
+	The analytics service returns `track_id`; every other field on this
+	wire is camelCase and the frontend reads `trackId`. Passing the body
+	through verbatim is a box labelled "person undefined" on every tile.
+	"""
+	body = {
+		'camera': '03',
+		'start': '2026-09-06T21:00:00+00:00',
+		'end': '2026-09-06T21:00:05+00:00',
+		'frames': [
+			{
+				'ts': '2026-09-06T21:00:00.100+00:00',
+				'objects': [
+					{
+						'track_id': 918, 'label': 'person',
+						'xc': 0.41, 'yc': 0.62, 'w': 0.08, 'h': 0.31,
+					}
+				],
+			}
+		],
+	}
+	monkeypatch.setattr(main.analytics, 'get', lambda path, params: body)
+	client = fastapi.testclient.TestClient(main.app)
+	payload = client.get('/api/overlay', params={'camera': '03'}).json()
+	obj = payload['frames'][0]['objects'][0]
+	assert obj['trackId'] == 918
+	assert 'track_id' not in obj
+
+
+def test_zones_come_back_shaped_for_the_renderer(monkeypatch):
+	body = {
+		'zones': [
+			{
+				'name': 'queue',
+				'kind': 'polygon',
+				'parts': [
+					{'camera': '12', 'name': None, 'points': [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]]}
+				],
+			}
+		],
+		'lines': [],
+	}
+	monkeypatch.setattr(main.analytics, 'get', lambda path, params: body)
+	client = fastapi.testclient.TestClient(main.app)
+	payload = client.get('/api/zones').json()
+	assert payload['zones'][0]['kind'] == 'polygon'
+	assert payload['zones'][0]['parts'][0]['camera'] == '12'
+	# Absent rather than null, matching what the TypeScript's `?:` means.
+	assert 'name' not in payload['zones'][0]['parts'][0]
+
+
+def test_no_analytics_service_means_no_zones_rather_than_an_error(monkeypatch):
+	monkeypatch.setattr(main.analytics, 'get', lambda path, params: None)
+	client = fastapi.testclient.TestClient(main.app)
+	response = client.get('/api/zones')
+	assert response.status_code == 200
+	assert response.json() == {'zones': [], 'lines': []}
+
+
+def test_a_new_split_card_needs_only_its_own_elementspec(monkeypatch):
+	"""The whole point of the server-driven design.
+
+	A second split stat group - back-of-house against front - must be one
+	ElementSpec, so the labels ride on the spec rather than living in a
+	table somewhere downstream that would have to be edited too.
+	"""
+	spec = dataclasses.replace(
+		catalogue.ELEMENTS_BY_ID['live-occupancy'],
+		id='kitchen-split',
+		source=catalogue.Source(
+			kind=catalogue.SourceKind.OCCUPANCY,
+			split=(
+				('kitchen', 'kitchen', i18n.Text('Kitchen', 'المطبخ')),
+				('queue', 'queue', i18n.Text('Queue', 'الطابور')),
+			),
+		),
+	)
+	asked = []
+
+	def fake_get(path, params):
+		asked.append(params.get('zone'))
+		return {
+			'end': '2026-09-06T21:00:00+00:00',
+			'latest': 2,
+			'buckets': [
+				{'ts': '2026-09-06T20:00:00+00:00', 'mean': 2.0, 'peak': 3}
+			],
+		}
+
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(live.analytics, 'get', fake_get)
+	monkeypatch.setitem(catalogue.ELEMENTS_BY_ID, 'kitchen-split', spec)
+
+	built = payloads.build_element(
+		'kitchen-split', '', i18n.Locale.EN, 'today'
+	)
+	labels = [stat.label for stat in built.data.stats]
+	assert labels == ['Total', 'Kitchen', 'Queue']
+	assert asked == ['kitchen', 'queue']
+	assert [stat.value for stat in built.data.stats] == ['4', '2', '2']
+
+
+def test_a_multi_day_instance_log_labels_the_day(monkeypatch):
+	"""Over a week "09:15" happens seven times.
+
+	The rows are ordered on the instant either way; this is about a
+	reader being able to tell Tuesday's from Thursday's.
+	"""
+	body = {
+		'count': 2,
+		'events': [
+			{
+				'id': 'cong-1', 'start': '2026-09-05T09:15:00+00:00',
+				'end': '2026-09-05T09:20:00+00:00', 'cameras': ['03'],
+				'peak_value': 12, 'threshold': 8, 'comparator': 'above',
+			},
+			{
+				'id': 'cong-2', 'start': '2026-09-06T09:15:00+00:00',
+				'end': '2026-09-06T09:20:00+00:00', 'cameras': ['03'],
+				'peak_value': 20, 'threshold': 8, 'comparator': 'above',
+			},
+		],
+	}
+	# Camera 03 has video from the 6th, so the older event has none.
+	cameras = {
+		'cameras': [
+			{
+				'id': '03', 'stream': 'cam3', 'live': True,
+				'recorded_from': '2026-09-06T00:00:00+00:00',
+			}
+		]
+	}
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(
+		live.analytics,
+		'get',
+		lambda path, params: cameras if path == '/cameras' else body,
+	)
+
+	log = payloads.build_instance_log(
+		'congestion-count', '', i18n.Locale.EN, '7d'
+	)
+	assert [entry.id for entry in log.instances] == ['cong-2', 'cong-1']
+	assert all('-' in entry.timestamp for entry in log.instances)
+	# Recording is a rolling window: the event inside it gets a link, the
+	# one that predates it gets none rather than a button that 404s.
+	by_id = {entry.id: entry for entry in log.instances}
+	assert by_id['cong-2'].clip_url is not None
+	assert by_id['cong-1'].clip_url is None
+
+	today = payloads.build_instance_log(
+		'congestion-count', '', i18n.Locale.EN, 'today'
+	)
+	assert all(len(entry.timestamp) == 5 for entry in today.instances)
+
+
+def test_a_ppe_card_shows_its_number_once_a_model_reports_one(monkeypatch):
+	"""The dash is for "not measured", not for "measured as zero"."""
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(
+		live.analytics,
+		'get',
+		lambda path, params: {'value': 3, 'status': 'ok'},
+	)
+	built = payloads.build_element(
+		'no-mask-count', '', i18n.Locale.EN, 'today'
+	)
+	assert built.data.value == '3'
+	assert built.data.severity is models.Severity.CRITICAL
+
+
+def test_a_ppe_card_with_no_model_shows_a_dash_not_a_zero(monkeypatch):
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(
+		live.analytics,
+		'get',
+		lambda path, params: {
+			'value': None,
+			'status': 'unavailable',
+			'reason': 'ppe_model_not_deployed',
+		},
+	)
+	built = payloads.build_element(
+		'no-mask-count', '', i18n.Locale.EN, 'today'
+	)
+	# Not "0": that would assert the kitchen was watched and found
+	# compliant, and severity is derived from the value.
+	assert built.data.value == live._NO_VALUE
+	assert built.data.severity is models.Severity.INFO
+
+
+def test_an_unwatched_camera_reports_no_signal(monkeypatch):
+	"""The branch has ten cameras; the pipeline watches five.
+
+	The other five are still on the wall and still in the catalogue -
+	they exist - but nothing is looking at them, so the honest tile is a
+	dark one. Reporting them online would be the lie.
+	"""
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(
+		live.analytics,
+		'get',
+		lambda path, params: {
+			'cameras': [
+				{'id': '03', 'stream': 'cam3', 'live': True},
+				{'id': '04', 'stream': 'cam4', 'live': True},
+				{'id': '05', 'stream': 'cam5', 'live': False},
+			]
+		},
+	)
+	answer = payloads.camera_status('')
+	assert answer.measured is True
+	status = answer.up
+	assert status['03'] is True
+	assert status['04'] is True
+	# Configured but its stream server does not have it.
+	assert status['05'] is False
+	# Not configured at all: nothing is watching it.
+	assert status['09'] is False
+	assert status['15'] is False
+	# Every camera the catalogue declares is accounted for, so the grid
+	# and the Feed health stats cannot disagree.
+	assert set(status) == {camera.id for camera in catalogue.CAMERAS}
+
+
+def test_a_camera_nobody_watches_carries_no_stream_url(client, monkeypatch):
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(
+		live.analytics,
+		'get',
+		lambda path, params: {
+			'cameras': [{'id': '03', 'stream': 'cam3', 'live': True}]
+		},
+	)
+	feeds = client.get('/api/elements/camera-feeds', params=FILTERS).json()
+	by_id = {feed['id']: feed for feed in feeds['data']['feeds']}
+	assert by_id['03']['status'] == 'online'
+	assert by_id['03']['streamUrl'] == '/cam3/index.m3u8'
+	# Absent, not a URL that would render as a broken player.
+	assert by_id['15']['status'] == 'offline'
+	assert 'streamUrl' not in by_id['15']
+
+
+def test_feed_health_counts_what_the_grid_shows(client, monkeypatch):
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(
+		live.analytics,
+		'get',
+		lambda path, params: {
+			'cameras': [
+				{'id': camera_id, 'stream': f'cam{int(camera_id)}', 'live': True}
+				for camera_id in ('03', '04', '05', '06', '12')
+			]
+		},
+	)
+	stats = client.get('/api/elements/camera-status', params=FILTERS).json()
+	by_id = {stat['id']: stat['value'] for stat in stats['data']['stats']}
+	assert by_id == {'total': '10', 'online': '5', 'offline': '5'}
+
+
+def test_no_pipeline_falls_back_to_the_generated_roll(monkeypatch):
+	monkeypatch.setattr(live.analytics, 'configured', lambda: False)
+	answer = payloads.camera_status('branch=olaya')
+	assert answer.measured is False
+	assert set(answer.up) == {camera.id for camera in catalogue.CAMERAS}
+	# Deterministic, so a card does not flicker between polls.
+	assert answer.up == payloads.camera_status('branch=olaya').up
+
+
+def test_real_feed_health_draws_no_invented_history(client, monkeypatch):
+	"""Nothing stores a history of which cameras were up.
+
+	The three numbers come from the servers that own the streams and are
+	true now. A random walk beside them would be the same false claim the
+	PPE dash exists to refuse, drawn as a chart instead of written as a
+	number.
+	"""
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(
+		live.analytics,
+		'get',
+		lambda path, params: {
+			'cameras': [{'id': '03', 'stream': 'cam3', 'live': True}]
+		},
+	)
+	payload = client.get(
+		'/api/elements/camera-status', params=FILTERS
+	).json()['data']
+	assert [stat['id'] for stat in payload['stats']] == [
+		'total', 'online', 'offline',
+	]
+	assert 'trend' not in payload
+
+
+def test_invented_feed_health_still_draws_its_line(client, monkeypatch):
+	# Without a pipeline the whole card is a placeholder, and the line is
+	# the only thing on it that moves.
+	monkeypatch.setattr(live.analytics, 'configured', lambda: False)
+	payload = client.get(
+		'/api/elements/camera-status', params=FILTERS
+	).json()['data']
+	assert payload['trend']['series'][0]['id'] == 'offline'
+	# The last point is the number the stats print, not another roll.
+	offline = next(
+		stat['value'] for stat in payload['stats'] if stat['id'] == 'offline'
+	)
+	assert payload['trend']['points'][-1]['offline'] == int(offline)
+
+
+def test_the_wire_says_whether_a_card_is_real(client, monkeypatch):
+	"""The two payloads are the same shape on purpose.
+
+	Which is exactly why the response has to say which one it is: a card
+	that fell back because a query timed out is indistinguishable from
+	one that measured something, and this dashboard's whole claim is that
+	the numbers are measured.
+	"""
+	monkeypatch.setattr(live.analytics, 'configured', lambda: False)
+	generated = client.get('/api/elements/queue-length', params=FILTERS).json()
+	assert generated['source'] == 'generated'
+
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(
+		live.analytics,
+		'get',
+		lambda path, params: {
+			'end': '2026-09-07T09:00:00+00:00',
+			'latest': 3,
+			'buckets': [
+				{'ts': '2026-09-07T08:00:00+00:00', 'mean': 3.0, 'peak': 4}
+			],
+		},
+	)
+	measured = client.get('/api/elements/queue-length', params=FILTERS).json()
+	assert measured['source'] == 'cameras'
+	# Same shape either way - which is the point.
+	assert measured['type'] == generated['type']
+
+
+def test_an_instance_log_says_where_it_came_from(client, monkeypatch):
+	monkeypatch.setattr(live.analytics, 'configured', lambda: False)
+	log = client.get(
+		'/api/elements/congestion-count/instances', params=FILTERS
+	).json()
+	assert log['source'] == 'generated'
+
+
+def test_a_response_this_cannot_read_is_logged_not_swallowed(monkeypatch, caplog):
+	"""A bug and a service being down must not look the same in the log."""
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(
+		live.analytics, 'get', lambda path, params: {'nonsense': True}
+	)
+	context = payloads._context(
+		catalogue.ELEMENTS_BY_ID['queue-length'], '', i18n.Locale.EN, 'today'
+	)
+	with caplog.at_level('WARNING'):
+		assert live.build(context) is None
+	assert any('queue-length' in record.message for record in caplog.records)
+
+
+def test_rules_are_evaluated_together_not_one_after_another(monkeypatch):
+	"""Ten rules in series is ten times the latency of one.
+
+	Each rule is its own query against the analytics service, behind a
+	client that gives up in four seconds - so evaluated in series, a
+	handful of rules reads as every rule being unevaluable rather than
+	slow.
+	"""
+	import threading
+	import time
+
+	threads = set()
+
+	def slow(spec, comparator, threshold, range_key):
+		threads.add(threading.get_ident())
+		time.sleep(0.25)
+		return 1
+
+	monkeypatch.setattr(alerts.live, 'breaches', slow)
+	store.clear()
+	for monitor in ('queue-length', 'footfall', 'live-occupancy'):
+		alerts.create_rule(
+			models.AlertRuleDraft(
+				monitor_id=monitor,
+				comparator=models.Comparator.ABOVE,
+				threshold=1,
+			),
+			i18n.Locale.EN, 'olaya', 'cafe',
+		)
+
+	# create_rule localises its own result, so it evaluates too - measure
+	# only the listing.
+	threads.clear()
+	started = time.monotonic()
+	rules = alerts.list_rules(i18n.Locale.EN, 'today')
+	elapsed = time.monotonic() - started
+
+	assert len(rules.rules) == 3
+	assert len(threads) == 3, 'each rule should be evaluated on its own thread'
+	# In series this is 0.75s; side by side it is a little over 0.25s.
+	assert elapsed < 0.6, f'took {elapsed:.2f}s, which is serial'
