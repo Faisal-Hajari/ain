@@ -22,13 +22,13 @@ points this at a file on a volume.
 
 import contextlib
 import datetime
-import os
 import sqlite3
 import threading
 from collections.abc import Iterator
 
-_MEMORY = 'file:ain-alerts?mode=memory&cache=shared'
-_PATH = os.environ.get('AIN_STORE_PATH', _MEMORY)
+from ain_backend import settings
+
+_PATH = settings.get().store_path
 
 _SCHEMA = """
 	CREATE TABLE IF NOT EXISTS alert_rules (

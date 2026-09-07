@@ -43,6 +43,9 @@ jobs:
           - app: savant-sink
             context: .
             file: applications/savant-sink/Dockerfile
+          - app: geometry-editor
+            context: .
+            file: applications/geometry-editor/Dockerfile
     steps:
       - uses: actions/checkout@v4
 

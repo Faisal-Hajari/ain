@@ -15,10 +15,10 @@ want the GPU, and the GPU is running inference.
 import bisect
 import datetime
 import logging
-import os
 import pathlib
 import re
 import subprocess
+import tempfile
 import threading
 
 import cv2
@@ -27,32 +27,21 @@ import numpy
 from clickhouse_connect.driver import client as ch_client
 
 from ain_analytics import config
+from ain_analytics import settings
 from ain_api import feeds
+from ain_api import objects
 from ain_api import queries
 
 _LOG = logging.getLogger(__name__)
 
-_PLAYBACK = os.environ.get('AIN_PLAYBACK_URL', 'http://cameras:9996')
-_CACHE = pathlib.Path(os.environ.get('AIN_CLIP_DIR', '/clips'))
-
-# Long enough to see what happened, short enough that a hundred alerts do
-# not fill the disk.
-MAX_SECONDS = 120
-DEFAULT_SECONDS = 20
+_OPTIONS = settings.get()
 
 _BOX_COLOR = (64, 220, 64)
 _TEXT_COLOR = (16, 16, 16)
 
 # Rendering a clip decodes, redraws and re-encodes on the CPU, and the same
-# host is running ten transcodes and a GPU pipeline. Two at a time keeps a
-# burst of alert clicks from starving the thing the clips are of.
-_RENDERS = threading.Semaphore(
-	int(os.environ.get('AIN_CLIP_CONCURRENCY', '2'))
-)
-
-# Oldest clips are dropped past this. They are a cache of something that can
-# always be rendered again, not a store.
-_CACHE_LIMIT = int(os.environ.get('AIN_CLIP_CACHE_FILES', '200'))
+# host is running the transcodes and a GPU pipeline.
+_RENDERS = threading.Semaphore(_OPTIONS.clip_concurrency)
 
 
 # An event id becomes a filename, so it is allowed to be exactly what
@@ -76,10 +65,18 @@ def clip_window(
 		end: When it ended, or None for a fixed-length clip.
 
 	Returns:
-		The range to fetch, capped at `MAX_SECONDS`.
+		The range to fetch, capped at `settings.clip_max_seconds`.
+
+	The cap is twenty minutes rather than two, because a clip has to be
+	able to contain the thing it is evidence of. A long-wait alert fires
+	on a queue wait measured in minutes and its clip should cover the
+	wait; a two-minute ceiling silently truncated exactly the events
+	most worth watching.
 	"""
-	finish = end or start + datetime.timedelta(seconds=DEFAULT_SECONDS)
-	longest = start + datetime.timedelta(seconds=MAX_SECONDS)
+	finish = end or start + datetime.timedelta(
+		seconds=_OPTIONS.clip_default_seconds
+	)
+	longest = start + datetime.timedelta(seconds=_OPTIONS.clip_max_seconds)
 	return queries.Window(start=start, end=min(finish, longest))
 
 
@@ -128,7 +125,7 @@ def _fetch(stream: str, scope: queries.Window, into: pathlib.Path) -> None:
 	}
 	try:
 		with httpx.stream(
-			'GET', f'{_PLAYBACK}/get', params=params, timeout=60.0
+			'GET', f'{_OPTIONS.playback_url}/get', params=params, timeout=60.0
 		) as response:
 			if response.status_code != 200:
 				response.read()
@@ -304,60 +301,58 @@ def render(
 	event_id: str,
 	camera: str,
 	scope: queries.Window,
-) -> pathlib.Path:
-	"""Produces the clip for one event, or returns the cached one.
+) -> tuple[str, datetime.datetime]:
+	"""Produces the clip for one event and returns where to fetch it.
 
 	Args:
 		client: A connected ClickHouse client.
-		event_id: Used as the filename, so the same event renders once.
+		event_id: Names the object, so the same event renders once.
 		camera: The camera id, as the catalogue names it.
 		scope: The range to cut.
 
 	Returns:
-		The path of the annotated mp4.
+		A presigned URL for the annotated mp4, and when it expires.
 
 	Raises:
 		ClipError: The id is not one, there is no recording for the
 			window, or it will not decode.
+		objects.StoreError: The object store would not answer.
 
-	A clip is rendered once and cached under its event id. Concurrent
-	renders are capped, and the cache is pruned: it holds copies of
-	something that can always be made again.
+	Rendered once and kept in the bucket under the event id. The bucket
+	expires it, so there is nothing here that prunes - and the browser
+	fetches it from the store rather than through this service and the
+	backend behind it.
 	"""
 	if not _ID.match(event_id):
 		raise ClipError(f'not an event id: {event_id!r}')
-	_CACHE.mkdir(parents=True, exist_ok=True)
-	target = _CACHE / f'{event_id}.mp4'
-	if target.exists() and target.stat().st_size > 0:
-		return target
+	key = f'{event_id}.mp4'
+	if objects.exists(key):
+		return objects.link(key)
 
 	stream = config.get().stream(camera)
 	if stream is None:
 		raise ClipError(f'unknown camera: {camera}')
 
-	# Everything is written to names of this attempt's own and moved into
-	# place at the end. Two requests for the same clip would otherwise have
-	# one serving the other's half-written file, and a render that failed
-	# would leave a broken mp4 that the size check above accepts forever.
 	# Trimmed to the video that is still there. An event older than the
 	# recording window has none, and that is a 404 with a reason rather
 	# than a broken player.
 	scope = available(stream, scope) or _missing(event_id, scope)
-	unique = f'{event_id}.{os.getpid()}.{threading.get_ident()}'
-	raw = _CACHE / f'{unique}.raw.mp4'
-	partial = _CACHE / f'{unique}.part.mp4'
 	with _RENDERS:
-		if target.exists() and target.stat().st_size > 0:
-			return target
-		try:
+		# Checked again inside the semaphore: two requests for the same
+		# clip queue here, and the second should upload nothing.
+		if objects.exists(key):
+			return objects.link(key)
+		# A directory of this attempt's own, removed whatever happens.
+		# Nothing outlives the render locally - the artefact is the
+		# object, and a half-written file cannot be mistaken for one.
+		with tempfile.TemporaryDirectory(prefix='clip-') as scratch:
+			workspace = pathlib.Path(scratch)
+			raw = workspace / 'source.mp4'
+			rendered = workspace / 'annotated.mp4'
 			_fetch(stream, scope, raw)
-			_encode(raw, partial, _boxes_by_offset(client, camera, scope))
-			os.replace(partial, target)
-			_prune()
-		finally:
-			raw.unlink(missing_ok=True)
-			partial.unlink(missing_ok=True)
-	return target
+			_encode(raw, rendered, _boxes_by_offset(client, camera, scope))
+			objects.put(key, rendered)
+	return objects.link(key)
 
 
 def _missing(event_id: str, scope: queries.Window) -> queries.Window:
@@ -376,25 +371,3 @@ def _missing(event_id: str, scope: queries.Window) -> queries.Window:
 		f'no recording for {event_id} at {scope.start.isoformat()}; '
 		'it is older than the recording window'
 	)
-
-
-def _prune() -> None:
-	"""Drops the oldest clips once the cache grows past its limit.
-
-	Called while holding the render semaphore, so two renders finishing
-	together do not both walk the directory - and every stat is guarded
-	anyway, because a file can still vanish underneath this one: sorting
-	by `path.stat().st_mtime` raises from inside the sort key, which
-	takes down the request that had already produced its clip.
-	"""
-	aged = []
-	for path in _CACHE.glob('*.mp4'):
-		if '.part.' in path.name or '.raw.' in path.name:
-			continue
-		try:
-			aged.append((path.stat().st_mtime, path))
-		except OSError:
-			continue
-	aged.sort()
-	for _, path in aged[: max(0, len(aged) - _CACHE_LIMIT)]:
-		path.unlink(missing_ok=True)

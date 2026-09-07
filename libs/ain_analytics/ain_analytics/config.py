@@ -11,18 +11,19 @@ import dataclasses
 import functools
 import hashlib
 import io
-import os
 import pathlib
 import tempfile
 from collections.abc import Iterable, Mapping
 
 import yaml
 
+from ain_analytics import settings
+
 Point = tuple[float, float]
 
-_DEFAULT_PATH = pathlib.Path(
-	os.environ.get('AIN_CAMERAS_YML', '/app/cameras.yml')
-)
+def _default_path() -> pathlib.Path:
+	"""Where cameras.yml is, per the settings."""
+	return settings.get().cameras_yml
 
 
 class ConfigError(Exception):
@@ -316,7 +317,7 @@ def load(path: pathlib.Path | None = None) -> Config:
 		ConfigError: A zone or line names an unknown camera, or its
 			points are unusable.
 	"""
-	path = path or _DEFAULT_PATH
+	path = path or _default_path()
 	document = yaml.safe_load(path.read_text())
 	cameras = document.get('cameras') or {}
 	if not cameras:
@@ -383,15 +384,19 @@ def load(path: pathlib.Path | None = None) -> Config:
 		)
 
 	kafka = document.get('kafka') or {}
+	options = settings.get()
 	return Config(
 		cameras=cameras,
 		zones=zones,
 		lines=lines,
-		kafka_brokers=os.environ.get(
-			'KAFKA_BROKERS', kafka.get('brokers', 'kafka:9092')
+		# The environment wins over the file, and the file over the
+		# fallback. This is a deployment detail, not geometry: the
+		# broker moves without the zones changing.
+		kafka_brokers=(
+			options.kafka_brokers or kafka.get('brokers') or 'kafka:9092'
 		),
-		kafka_topic=os.environ.get(
-			'KAFKA_TOPIC', kafka.get('topic', 'ain.people.raw')
+		kafka_topic=(
+			options.kafka_topic or kafka.get('topic') or 'ain.people.raw'
 		),
 	)
 
@@ -404,7 +409,7 @@ def version(path: pathlib.Path | None = None) -> str:
 	- or one tab and one hand edit - end with the second silently deleting
 	whatever the first drew. Comparing this is what turns that into a 409.
 	"""
-	path = path or _DEFAULT_PATH
+	path = path or _default_path()
 	return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
 
 
@@ -430,7 +435,7 @@ def get() -> Config:
 # Two decimals is ~13px on a 1280-wide frame, which is a tenth of a person.
 # It is also what every polygon in the checked-in file already uses, so a
 # saved zone and a hand-written one look the same in a diff.
-_PRECISION = 2
+_PRECISION = settings.get().geometry_decimal_places
 
 
 def _round_trip():
@@ -616,7 +621,7 @@ def save(
 			parse. Nothing is written in any of those cases.
 		StaleWriteError: The file changed since `expect` was read.
 	"""
-	path = path or _DEFAULT_PATH
+	path = path or _default_path()
 	if expect is not None and version(path) != expect:
 		raise StaleWriteError(
 			'cameras.yml changed since this page loaded. Reload before '

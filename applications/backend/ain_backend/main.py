@@ -18,6 +18,7 @@ from ain_backend import analytics
 from ain_backend import catalogue
 from ain_backend import i18n
 from ain_backend import models
+from ain_backend import settings
 from ain_backend import payloads
 
 # The filters the frontend stacks onto every data request. UI state
@@ -67,7 +68,7 @@ app = fastapi.FastAPI(
 
 app.add_middleware(
 	cors.CORSMiddleware,
-	allow_origins=os.environ.get('AIN_CORS_ORIGINS', '*').split(','),
+	allow_origins=settings.get().cors_origin_list,
 	allow_methods=['GET', 'POST', 'DELETE'],
 	allow_headers=['*'],
 )
@@ -193,50 +194,43 @@ def read_overlay(
 def read_clip(
 	event_id: str, camera: str, start: str, end: str | None = None
 ) -> responses.Response:
-	"""Streams the video behind one alert, boxes burnt in.
+	"""Redirects to the video behind one alert, boxes burnt in.
 
 	Args:
-		event_id: The occurrence, which names the file.
+		event_id: The occurrence, which names the object.
 		camera: Which camera to cut from.
 		start: ISO 8601, inclusive.
 		end: ISO 8601, exclusive.
 
 	Returns:
-		An mp4. Unlike the live view these boxes are drawn into the
-		frames: a file saved from here and opened in a player has to
-		carry its own annotation.
+		A redirect to a presigned link on the object store. The bytes
+		used to be streamed through here from the analytics service,
+		which put a megabyte of video through two Python processes to
+		reach a browser that can fetch it directly. This route stays
+		because the URL is built lazily for every row of an instance
+		log - asking the analytics service to render each one just to
+		put a link in a table would render clips nobody opens.
+
+		Unlike the live view these boxes are drawn into the frames: a
+		file saved from here and opened in a player has to carry its
+		own annotation.
 
 	Raises:
 		fastapi.HTTPException: There is no recording for that window -
 			MediaMTX keeps a short one - or no analytics service.
 	"""
-	upstream = analytics.stream(
-		f'/clips/{event_id}.mp4',
+	body = analytics.get(
+		f'/clips/{event_id}',
 		{'camera': camera, 'start': start, 'end': end},
+		timeout=settings.get().clip_timeout_seconds,
 	)
-	if upstream is None:
+	if body is None or not body.get('url'):
 		raise fastapi.HTTPException(
 			status_code=404, detail='no clip for that window'
 		)
-	def chunks():
-		"""Yields the upstream body in blocks.
-
-		Iterating an HTTP response directly yields LINES, which for a
-		binary mp4 means a chunk per stray 0x0a - hundreds of thousands
-		of them for a megabyte of video.
-		"""
-		try:
-			while block := upstream.read(64 * 1024):
-				yield block
-		finally:
-			upstream.close()
-
-	return responses.StreamingResponse(
-		chunks(), media_type='video/mp4',
-		headers={
-			'Content-Disposition': f'inline; filename="{event_id}.mp4"'
-		},
-	)
+	# 307 rather than 302: the method has to survive, and a cached
+	# redirect would outlive the signature on the URL it points at.
+	return responses.RedirectResponse(body['url'], status_code=307)
 
 
 @app.get('/api/alerts/monitors', response_model_exclude_none=True)

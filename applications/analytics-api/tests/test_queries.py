@@ -2,11 +2,11 @@
 
 import datetime
 import pathlib
-import pathlib
 
 import pytest
 
 from ain_analytics import config
+from ain_analytics import settings
 from ain_api import queries
 
 _REAL = (
@@ -103,11 +103,15 @@ def test_dwell_excludes_untracked_detections():
 	assert 'track_id != 0' in sql
 
 
-def test_a_clip_id_that_is_not_one_is_refused(tmp_path, monkeypatch):
-	"""The id becomes a filename, so it is checked where it is used."""
+def test_a_clip_id_that_is_not_one_is_refused():
+	"""The id names an object in a shared bucket, so it is checked here.
+
+	Refused before anything is reached for - no ClickHouse client, no
+	object store. A `..` or a slash in an object key is a path into
+	somebody else's clip.
+	"""
 	from ain_api import clips
 
-	monkeypatch.setattr(clips, '_CACHE', tmp_path)
 	for bad in ('..', 'a/b', 'x' * 65, '', 'a b'):
 		with pytest.raises(clips.ClipError, match='not an event id'):
 			clips.render(None, bad, '03', _window(10))
@@ -213,27 +217,76 @@ def test_a_bow_tie_zone_stops_the_service_starting(tmp_path):
 		config.load(path)
 
 
-def test_pruning_survives_a_file_vanishing(tmp_path, monkeypatch):
-	"""Sorting by st_mtime raises from inside the sort key otherwise."""
+def test_the_bucket_expires_clips_rather_than_this_service_pruning_them(monkeypatch):
+	"""Retention is a lifecycle rule now, not a directory walk.
+
+	The local cache had a limit to tune, a directory to walk, and a prune
+	that raced its own renders and fell over when a file vanished under
+	it. None of that exists any more, so what is worth pinning is that
+	the rule replacing it is actually applied: a bucket created without
+	one keeps every clip forever.
+	"""
+	from ain_api import objects
+
+	applied = {}
+
+	class FakeStore:
+		def head_bucket(self, **kwargs):
+			return {}
+
+		def put_bucket_lifecycle_configuration(self, **kwargs):
+			applied.update(kwargs)
+
+	monkeypatch.setattr(objects, 'client', lambda: FakeStore())
+	objects.ensure_bucket.cache_clear()
+	try:
+		objects.ensure_bucket()
+	finally:
+		objects.ensure_bucket.cache_clear()
+
+	rule = applied['LifecycleConfiguration']['Rules'][0]
+	assert rule['Status'] == 'Enabled'
+	assert rule['Expiration']['Days'] == settings.get().clip_retention_days
+
+
+def test_a_clip_can_be_as_long_as_the_event_it_is_evidence_of():
+	"""Two minutes could not contain a long-wait alert.
+
+	A long-wait fires on a queue wait measured in minutes, and the clip
+	is what somebody looks at to decide whether the alert was real. The
+	old two-minute ceiling silently truncated exactly the events most
+	worth watching, so the cap is twenty minutes.
+	"""
 	from ain_api import clips
 
-	monkeypatch.setattr(clips, '_CACHE', tmp_path)
-	monkeypatch.setattr(clips, '_CACHE_LIMIT', 1)
-	for name in ('a.mp4', 'b.mp4', 'c.mp4'):
-		(tmp_path / name).write_bytes(b'x')
+	start = datetime.datetime(2026, 9, 7, tzinfo=datetime.timezone.utc)
+	# An eight-minute wait survives whole.
+	eight = clips.clip_window(start, start + datetime.timedelta(minutes=8))
+	assert eight.seconds == 480
 
-	real_stat = pathlib.Path.stat
+	# And the cap still exists, so a caller cannot ask for a day.
+	capped = clips.clip_window(start, start + datetime.timedelta(hours=4))
+	assert capped.seconds == settings.get().clip_max_seconds
 
-	def flaky(self, *args, **kwargs):
-		if self.name == 'b.mp4':
-			raise FileNotFoundError(self)
-		return real_stat(self, *args, **kwargs)
+	# An open-ended request is still short: a clip with no end is one
+	# somebody clicked, not an event with a measured length.
+	assert clips.clip_window(start, None).seconds == (
+		settings.get().clip_default_seconds
+	)
 
-	monkeypatch.setattr(pathlib.Path, 'stat', flaky)
-	clips._prune()  # must not raise
-	monkeypatch.undo()
-	# The one that vanished mid-walk is skipped, not fatal; of the two that
-	# could be read, the limit keeps the newest.
-	left = sorted(p.name for p in tmp_path.glob('*.mp4'))
-	assert 'b.mp4' in left
-	assert len(left) == 2
+
+def test_a_rendered_clip_is_not_kept_on_local_disk(monkeypatch, tmp_path):
+	"""The artefact is the object. Nothing survives the render locally.
+
+	A half-written mp4 left behind used to be indistinguishable from a
+	finished one, and the size check accepted it forever.
+	"""
+	import inspect
+
+	from ain_api import clips
+
+	source = inspect.getsource(clips.render)
+	assert 'TemporaryDirectory' in source
+	# And no module-level directory to leak into.
+	assert not hasattr(clips, '_CACHE')
+	assert not hasattr(clips, '_prune')

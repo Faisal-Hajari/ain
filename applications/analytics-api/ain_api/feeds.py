@@ -18,7 +18,6 @@ exactly what a viewer needs to know.
 
 import datetime
 import logging
-import os
 import threading
 import time
 from concurrent import futures
@@ -26,16 +25,14 @@ from concurrent import futures
 import httpx
 
 from ain_analytics import config
+from ain_analytics import settings
 
 _LOG = logging.getLogger(__name__)
 
-_MEDIAMTX = os.environ.get('AIN_MEDIAMTX_URL', 'http://cameras:9997')
-_PLAYBACK = os.environ.get('AIN_PLAYBACK_URL', 'http://cameras:9996')
-_TIMEOUT = float(os.environ.get('AIN_MEDIAMTX_TIMEOUT', '3'))
+_OPTIONS = settings.get()
 # Recording rolls at segment boundaries, so the horizon moves about once a
 # minute. Caching it briefly turns a burst of dashboard requests into one
 # round of questions.
-_HORIZON_TTL = float(os.environ.get('AIN_HORIZON_TTL', '20'))
 
 _horizon: dict[str, tuple[float, datetime.datetime | None]] = {}
 _horizon_lock = threading.Lock()
@@ -51,9 +48,9 @@ def ready_streams() -> set[str] | None:
 	"""
 	try:
 		response = httpx.get(
-			f'{_MEDIAMTX}/v3/paths/list',
+			f'{_OPTIONS.mediamtx_url}/v3/paths/list',
 			params={'itemsPerPage': 1000},
-			timeout=_TIMEOUT,
+			timeout=_OPTIONS.mediamtx_timeout_seconds,
 		)
 		response.raise_for_status()
 		items = response.json().get('items', [])
@@ -77,7 +74,7 @@ def recorded(stream: str) -> list[tuple[datetime.datetime, float]]:
 	"""
 	try:
 		response = httpx.get(
-			f'{_PLAYBACK}/list', params={'path': stream}, timeout=_TIMEOUT
+			f'{_OPTIONS.playback_url}/list', params={'path': stream}, timeout=_OPTIONS.mediamtx_timeout_seconds
 		)
 		response.raise_for_status()
 		items = response.json() or []
@@ -123,7 +120,7 @@ def horizons(streams: list[str]) -> dict[str, datetime.datetime | None]:
 	with _horizon_lock:
 		for stream in streams:
 			cached = _horizon.get(stream)
-			if cached and now - cached[0] < _HORIZON_TTL:
+			if cached and now - cached[0] < _OPTIONS.horizon_ttl_seconds:
 				answers[stream] = cached[1]
 			else:
 				ask.append(stream)

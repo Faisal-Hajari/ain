@@ -21,6 +21,7 @@ from savant_rs.utils.serialization import load_message_from_bytes
 
 from ain_analytics import config #to track kafak topic and brokers
 from ain_analytics import db #connection to clickhouse and getting table information
+from ain_analytics import settings #every tunable, in one file
 from ain_analytics import throttle #keeps a broker fault to one line a minute
 _LOG = logging.getLogger('ain_ingest')
 
@@ -32,8 +33,7 @@ _UNTRACKED = 2**64 - 1
 # ~750 rows/sec across ten cameras. Row-by-row inserts would create one part
 # per row and the merger would never catch up; a batch per second is one part
 # per second, which it does.
-_BATCH_ROWS = int(os.environ.get('AIN_INGEST_BATCH_ROWS', '1000'))
-_BATCH_SECONDS = float(os.environ.get('AIN_INGEST_BATCH_SECONDS', '1.0'))
+_OPTIONS = settings.get()
 
 _running = True
 
@@ -110,7 +110,7 @@ def _consume(consumer: confluent_kafka.Consumer) -> Iterator[list[tuple]]:
 		A non-empty list of rows.
 	"""
 	batch: list[tuple] = []
-	deadline = time.monotonic() + _BATCH_SECONDS
+	deadline = time.monotonic() + _OPTIONS.ingest_batch_seconds
 	while _running:
 		message = consumer.poll(0.2)
 		if message is not None and message.error() is None:
@@ -128,11 +128,11 @@ def _consume(consumer: confluent_kafka.Consumer) -> Iterator[list[tuple]]:
 			throttle.warn(_LOG, error.code(), 'kafka: %s', error)
 
 		expired = time.monotonic() >= deadline
-		if batch and (len(batch) >= _BATCH_ROWS or expired):
+		if batch and (len(batch) >= _OPTIONS.ingest_batch_rows or expired):
 			yield batch
 			batch = []
 		if expired:
-			deadline = time.monotonic() + _BATCH_SECONDS
+			deadline = time.monotonic() + _OPTIONS.ingest_batch_seconds
 	if batch:
 		yield batch
 
@@ -144,7 +144,7 @@ def main() -> int:
 		A process exit code.
 	"""
 	logging.basicConfig(
-		level=os.environ.get('LOGLEVEL', 'INFO').upper(),
+		level=_OPTIONS.log_level.upper(),
 		format='%(asctime)s %(levelname)s %(name)s %(message)s',
 	)
 	signal.signal(signal.SIGTERM, _stop)
@@ -155,7 +155,7 @@ def main() -> int:
 	consumer = confluent_kafka.Consumer(
 		{
 			'bootstrap.servers': settings.kafka_brokers,
-			'group.id': os.environ.get('KAFKA_GROUP_ID', 'ain-track-ingest'),
+			'group.id': _OPTIONS.kafka_group_id,
 			'auto.offset.reset': 'latest',
 			# Offsets are committed after the insert, not on a timer. That
 			# makes this at-least-once, which the schema is built to

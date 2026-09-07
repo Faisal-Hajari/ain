@@ -63,9 +63,14 @@ the compose generator, the query layer and the browser overlay, and editing it
 never restarts the module.
 
 **To draw the zones rather than guess at coordinates**, open
-<http://localhost:8100/editor>: a still from each camera with the shapes it
-already has drawn over it, click to add new ones, and a Save button that writes
+<http://localhost:8101>: a still from each camera with the shapes it already
+has drawn over it, click to add new ones, and a Save button that writes
 `config/cameras.yml` back - comments and all.
+
+Every environment variable the services read is declared in one file each -
+`libs/ain_analytics/ain_analytics/settings.py` and
+`applications/backend/ain_backend/settings.py` - with its default and the
+reason for it. There is no `os.environ` anywhere else.
 
 ## Layout
 
@@ -77,7 +82,8 @@ libs/         ain_analytics - what more than one service needs: the config
 applications/ one directory per running service
   backend/          the dashboard's API, and every string a human reads
   frontend/         React, the only thing that renders
-  analytics-api/    the KPI query layer, and the geometry editor
+  analytics-api/    the KPI query layer
+  geometry-editor/  one page for drawing zones, and a proxy
   track-ingest/     Kafka -> ClickHouse
   savant-sink/      the module's ZeroMQ output -> Kafka
   savant-module/    module.yml, the only thing on the GPU

@@ -21,7 +21,8 @@ ENV PYTHONPATH=/src/applications/track-ingest:/src/libs/ain_analytics \
 # neither pulls OpenCV - installing another OpenCV over this image breaks the
 # CUDA-built one it ships. `uv sync` is deliberately not used here: it would
 # build a fresh environment and lose exactly the wheels this image exists for.
-RUN pip install --no-cache-dir 'clickhouse-connect>=0.8.0' 'pyyaml>=6.0' 'pytest>=8.0'
+RUN pip install --no-cache-dir \
+    'clickhouse-connect>=0.8.0' 'pyyaml>=6.0' 'pydantic-settings>=2.0' 'pytest>=8.0'
 
 COPY libs/ain_analytics/ain_analytics /src/libs/ain_analytics/ain_analytics
 COPY applications/track-ingest/ain_ingest ./ain_ingest

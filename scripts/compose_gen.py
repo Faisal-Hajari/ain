@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["pyyaml>=6.0"]
+# dependencies = ["pyyaml>=6.0", "pydantic-settings>=2.0"]
 # ///
 """Generates the per-camera half of the compose stack from cameras.yml.
 

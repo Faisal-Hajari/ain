@@ -10,18 +10,15 @@ per page load is a lot of ceremony for a picture that barely changes.
 """
 
 import logging
-import os
 import subprocess
 import threading
 import time
 
+from ain_analytics import settings
+
 _LOG = logging.getLogger(__name__)
 
-_RTSP = os.environ.get('AIN_RTSP_URL', 'rtsp://cameras:8554')
-# Long enough to open an RTSP session and decode to a keyframe; short enough
-# that a dead camera does not hold the request open.
-_TIMEOUT = float(os.environ.get('AIN_FRAME_TIMEOUT', '15'))
-_TTL = float(os.environ.get('AIN_FRAME_TTL', '5'))
+_OPTIONS = settings.get()
 
 _cache: dict[str, tuple[float, bytes]] = {}
 _lock = threading.Lock()
@@ -46,7 +43,7 @@ def still(stream: str) -> bytes:
 	now = time.monotonic()
 	with _lock:
 		cached = _cache.get(stream)
-		if cached and now - cached[0] < _TTL:
+		if cached and now - cached[0] < _OPTIONS.frame_ttl_seconds:
 			return cached[1]
 
 	command = [
@@ -54,16 +51,16 @@ def still(stream: str) -> bytes:
 		# TCP for the same reason the pipeline uses it: over UDP this hop
 		# drops packets even on loopback.
 		'-rtsp_transport', 'tcp',
-		'-i', f'{_RTSP}/{stream}',
+		'-i', f'{_OPTIONS.rtsp_url}/{stream}',
 		'-frames:v', '1', '-q:v', '4',
 		'-f', 'image2', 'pipe:1',
 	]
 	try:
 		result = subprocess.run(
-			command, capture_output=True, timeout=_TIMEOUT, check=False
+			command, capture_output=True, timeout=_OPTIONS.frame_timeout_seconds, check=False
 		)
 	except subprocess.TimeoutExpired as error:
-		raise FrameError(f'{stream} did not answer in {_TIMEOUT:.0f}s') from error
+		raise FrameError(f'{stream} did not answer in {_OPTIONS.frame_timeout_seconds:.0f}s') from error
 	if result.returncode != 0 or not result.stdout:
 		detail = result.stderr.decode('utf-8', 'replace').strip()[:200]
 		raise FrameError(f'{stream}: {detail or "no frame"}')

@@ -32,8 +32,7 @@ ENV PATH="/src/applications/analytics-api/.venv/bin:$PATH" \
     PYTHONPATH=/src/applications/analytics-api \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    AIN_CAMERAS_YML=/src/config/cameras.yml \
-    AIN_EDITOR_HTML=/src/applications/analytics-api/editor.html
+    AIN_CAMERAS_YML=/src/config/cameras.yml
 
 # ffmpeg encodes the clips: OpenCV writes MPEG-4 Part 2, which no browser
 # plays, and the tiles already play H.264. libgl1/libglib are what
@@ -57,10 +56,6 @@ COPY --from=builder --chown=ain:ain \
      /src/applications/analytics-api/.venv /src/applications/analytics-api/.venv
 COPY --from=builder --chown=ain:ain \
      /src/applications/analytics-api/ain_api /src/applications/analytics-api/ain_api
-# The zone editor: one self-contained page, no build step and no bundler,
-# served at /editor by the service that writes the YAML it produces.
-COPY --chown=ain:ain applications/analytics-api/editor.html ./editor.html
-
 # cameras.yml is NOT copied in. It is bind-mounted from config/, because the
 # editor writes to it and a baked copy would be a second answer to "what is
 # the geometry" that goes stale the first time anybody saves.

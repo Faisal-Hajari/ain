@@ -19,7 +19,6 @@ Run it with `python -m ain_sink`.
 """
 
 import logging
-import os
 import signal
 import sys
 
@@ -29,20 +28,12 @@ from savant_rs import zmq
 from savant_rs.utils.serialization import save_message_to_bytes
 
 from ain_analytics import config
+from ain_analytics import settings
 from ain_analytics import throttle
 
 _LOG = logging.getLogger('ain_sink')
 
-_ENDPOINT = os.environ.get(
-	'ZMQ_ENDPOINT', 'sub+connect:ipc:///tmp/zmq-sockets/output-video.ipc'
-)
-# Long enough that an idle pipeline is not a busy loop, short enough that
-# SIGTERM is answered promptly.
-_RECEIVE_TIMEOUT_MS = 1000
-_PARTITIONS = int(os.environ.get('KAFKA_CREATE_TOPIC_NUM_PARTITIONS', '4'))
-# The only thing this queue protects is memory. Named, so the line that
-# reports it filling can say what it filled up to.
-_QUEUE_MAX = int(os.environ.get('KAFKA_QUEUE_MAX_MESSAGES', '100000'))
+_OPTIONS = settings.get()
 
 _running = True
 
@@ -67,12 +58,12 @@ def ensure_topic(brokers: str, topic: str) -> None:
 	if topic in client.list_topics(timeout=10).topics:
 		return
 	request = admin.NewTopic(
-		topic, num_partitions=_PARTITIONS, replication_factor=1
+		topic, num_partitions=_OPTIONS.kafka_topic_partitions, replication_factor=1
 	)
 	for name, future in client.create_topics([request]).items():
 		try:
 			future.result()
-			_LOG.info('created topic %s with %s partitions', name, _PARTITIONS)
+			_LOG.info('created topic %s with %s partitions', name, _OPTIONS.kafka_topic_partitions)
 		except Exception as error:  # noqa: BLE001 - a race is not a failure
 			_LOG.info('topic %s not created: %s', name, error)
 
@@ -84,7 +75,7 @@ def main() -> int:
 		A process exit code.
 	"""
 	logging.basicConfig(
-		level=os.environ.get('LOGLEVEL', 'INFO').upper(),
+		level=_OPTIONS.log_level.upper(),
 		format='%(asctime)s %(levelname)s %(name)s %(message)s',
 	)
 	signal.signal(signal.SIGTERM, _stop)
@@ -98,18 +89,18 @@ def main() -> int:
 			# The module publishes over PUB/SUB and never blocks, so the
 			# only thing this queue protects is memory: if Kafka is down,
 			# drop rather than grow.
-			'queue.buffering.max.messages': _QUEUE_MAX,
+			'queue.buffering.max.messages': _OPTIONS.kafka_queue_max_messages,
 			'linger.ms': 50,
 		}
 	)
 
-	builder = zmq.ReaderConfigBuilder(_ENDPOINT)
-	builder.with_receive_timeout(_RECEIVE_TIMEOUT_MS)
+	builder = zmq.ReaderConfigBuilder(_OPTIONS.zmq_endpoint)
+	builder.with_receive_timeout(_OPTIONS.zmq_receive_timeout_ms)
 	reader = zmq.BlockingReader(builder.build())
 	reader.start()
 	_LOG.info(
 		'relaying %s -> %s/%s',
-		_ENDPOINT,
+		_OPTIONS.zmq_endpoint,
 		settings.kafka_brokers,
 		settings.kafka_topic,
 	)
@@ -146,7 +137,7 @@ def main() -> int:
 					'queue-full',
 					'kafka: local queue full at %d messages, dropping '
 					'detections - the broker is not keeping up',
-					_QUEUE_MAX,
+					_OPTIONS.kafka_queue_max_messages,
 				)
 				producer.poll(0)
 				continue

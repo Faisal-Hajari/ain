@@ -20,30 +20,43 @@ Two families of metric go through it:
 import dataclasses
 import datetime
 import hashlib
+import typing
 from collections.abc import Iterator
+from typing import Literal
 
 from clickhouse_connect.driver import client as ch_client
 
 from ain_analytics import config
+from ain_analytics import settings
 from ain_api import queries
 
-# Buckets finer than this make an event out of one person walking past.
-_EVENT_INTERVAL = 30
+# Named for its unit: it is a bucket width in SECONDS, not a count of
+# buckets or of objects. See settings.event_bucket_seconds.
+_EVENT_BUCKET_SECONDS = settings.get().event_bucket_seconds
 
-SERIES_METRICS = ('occupancy', 'footfall')
-VISIT_METRICS = ('dwell',)
-METRICS = SERIES_METRICS + VISIT_METRICS
-
-COMPARATORS = ('above', 'below')
-
+# Declared as types, not as tuples checked at runtime. A parameter whose
+# legal values are a fixed set of strings is a Literal: the type checker
+# rejects a typo before it runs, and FastAPI turns the same annotation into
+# a 422 with the alternatives listed rather than a 500 from deep inside a
+# query builder.
+SeriesMetric = Literal['occupancy', 'footfall']
+VisitMetric = Literal['dwell']
+Metric = Literal['occupancy', 'footfall', 'dwell']
+Comparator = Literal['above', 'below']
 # What a threshold is a threshold OF. `absolute` is a number of people;
 # `capacity` is a share of what the zone holds, so "passed 90%" means
 # something; `mean` is a share of the window's own average, so "below
 # average" means something. All three go through the same run-finding, which
 # is the point - a named event and a custom rule must not disagree about
 # where a breach starts.
-BASES = ('absolute', 'capacity', 'mean')
+Basis = Literal['absolute', 'capacity', 'mean']
 
+SERIES_METRICS = typing.get_args(SeriesMetric)
+VISIT_METRICS = typing.get_args(VisitMetric)
+METRICS = typing.get_args(Metric)
+BASES = typing.get_args(Basis)
+
+COMPARATORS = ('above', 'below')
 
 class UnknownBasisError(KeyError):
 	"""No threshold basis carries the requested name."""
@@ -88,7 +101,7 @@ class Event:
 		}
 
 
-def _holds(value: float, comparator: str, threshold: float) -> bool:
+def _holds(value: float, comparator: Comparator, threshold: float) -> bool:
 	"""Applies one comparator.
 
 	Args:
@@ -104,7 +117,7 @@ def _holds(value: float, comparator: str, threshold: float) -> bool:
 
 
 def _runs(
-	buckets: list[dict], key: str, comparator: str, threshold: float
+	buckets: list[dict], key: str, comparator: Comparator, threshold: float
 ) -> Iterator[tuple[int, int, float]]:
 	"""Finds maximal runs of buckets where the test holds.
 
@@ -159,7 +172,7 @@ def _weighted_mean(buckets: list[dict], key: str) -> float:
 
 def _resolve(
 	threshold: float,
-	basis: str,
+	basis: Basis,
 	zone: 'config.Zone | None',
 	buckets: list[dict],
 	key: str,
@@ -246,16 +259,16 @@ def _event_id(kind: str, *parts: object) -> str:
 
 def _series_events(
 	client: ch_client.Client,
-	metric: str,
+	metric: Metric,
 	target: str,
-	comparator: str,
+	comparator: Comparator,
 	threshold: float,
 	for_seconds: int,
 	window: queries.Window,
 	kind: str,
 	interval: int | None,
 	tz: str,
-	basis: str,
+	basis: Basis,
 	rising: str | None,
 ) -> list[Event]:
 	"""Evaluates a bucketed metric against a sustained threshold.
@@ -290,7 +303,7 @@ def _series_events(
 		UnknownBasisError: The basis is not one of `BASES`.
 	"""
 	settings = config.get()
-	requested = interval or _EVENT_INTERVAL
+	requested = interval or _EVENT_BUCKET_SECONDS
 	interval = max(requested, queries.bucket_seconds(window, requested))
 	zone = None
 	if metric == 'occupancy':
@@ -361,7 +374,7 @@ def _series_events(
 def _visit_events(
 	client: ch_client.Client,
 	target: str,
-	comparator: str,
+	comparator: Comparator,
 	threshold: float,
 	window: queries.Window,
 	kind: str,
@@ -422,16 +435,16 @@ def _visit_events(
 
 def evaluate(
 	client: ch_client.Client,
-	metric: str,
+	metric: Metric,
 	target: str,
-	comparator: str,
+	comparator: Comparator,
 	threshold: float,
 	window: queries.Window,
 	for_seconds: int = 0,
 	kind: str = 'threshold',
 	interval: int | None = None,
 	tz: str = 'UTC',
-	basis: str = 'absolute',
+	basis: Basis = 'absolute',
 	rising: str | None = None,
 ) -> list[Event]:
 	"""Runs one alert rule over one window.
@@ -464,6 +477,9 @@ def evaluate(
 		config.UnknownZoneError: The target names nothing.
 		config.NoCapacityError: A capacity basis on a zone without one.
 	"""
+	# Still checked at runtime: `Basis` stops a typo at the type checker and
+	# at the HTTP boundary, but this is also called from the alert rules,
+	# whose basis comes out of a user-editable store.
 	if basis not in BASES:
 		raise UnknownBasisError(basis)
 	if metric in SERIES_METRICS:

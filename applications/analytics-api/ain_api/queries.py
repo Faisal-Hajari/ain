@@ -24,27 +24,28 @@ from collections.abc import Sequence
 from clickhouse_connect.driver import client as ch_client
 
 from ain_analytics import config
+from ain_analytics import settings
 from ain_analytics import db
 
 # A time series is evaluated on buckets, and the number of them has to stay
 # bounded whether the caller asked for an hour or a month.
-_MAX_BUCKETS = 5000
+_MAX_BUCKETS = settings.get().max_buckets
 
 # A tracker reuses its ids. Two people can share one track_id an hour apart,
 # and a visit measured as max(ts) - min(ts) over that id would be an hour
 # long - which is how a "long wait" of forty-six minutes appears in a shop
 # nobody stayed in. A gap longer than this ends the visit.
-_VISIT_GAP_MS = 5_000
+_VISIT_GAP_MS = settings.get().visit_gap_ms
 
 # `/overlay` covers one video window, not one frame. Anything past this is a
 # caller who meant to ask for a chart.
-OVERLAY_MAX_SECONDS = 60
-OVERLAY_MAX_ROWS = 50_000
+OVERLAY_MAX_SECONDS = settings.get().overlay_max_seconds
+OVERLAY_MAX_ROWS = settings.get().overlay_max_rows
 
 # A month of a busy queue is tens of thousands of visits. This is a ceiling
 # on one response, not on the measurement: `dwell` aggregates in SQL and is
 # not capped, so the counts it reports stay true above this.
-MAX_VISITS = 20_000
+MAX_VISITS = settings.get().max_visits
 
 
 @dataclasses.dataclass(frozen=True)

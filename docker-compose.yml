@@ -295,7 +295,56 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # Numbers and units, never a formatted string, a severity or a sentence:
+
+  # Where rendered clips live. The alternative was a directory inside the
+  # analytics API's container, which made that service stateful for
+  # something that is not state: retention became a cache limit to tune and
+  # a prune to race, a restart lost every clip, and the mp4 travelled
+  # through two services to reach a browser that could have fetched it
+  # directly. A bucket with a lifecycle rule does all three properly.
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=ain
+      - MINIO_ROOT_PASSWORD=ainsecret
+    ports:
+      # The browser fetches clips straight from here on a presigned link, so
+      # unlike the other back-end services this one is reachable from the
+      # host. Loopback only: presigned or not, these are recordings of
+      # identifiable people.
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  # The zone editor: one HTML file and a reverse proxy, and no application
+  # code at all. Separate from the API because it is a separate thing - a
+  # page somebody opens now and then to move a polygon, versus the query
+  # layer the dashboard hits continuously.
+  geometry-editor:
+    build:
+      context: .
+      dockerfile: applications/geometry-editor/Dockerfile
+    image: ain-geometry-editor:dev
+    ports:
+      - "127.0.0.1:8101:8101"
+    volumes:
+      # Bind-mounted so editing the page is a browser reload rather than an
+      # image rebuild.
+      - ./applications/geometry-editor/editor.html:/usr/share/nginx/html/editor.html:ro
+    depends_on:
+      analytics-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+ # Numbers and units, never a formatted string, a severity or a sentence:
   # ain_backend ships English and Arabic and owns every one of those.
   analytics-api:
     build:
@@ -313,9 +362,14 @@ services:
       - CLICKHOUSE_USER=ain
       - CLICKHOUSE_PASSWORD=ain
       - AIN_PLAYBACK_URL=http://cameras:9996
-      - AIN_CLIP_DIR=/clips
       # Where the editor cuts its still frames from.
       - AIN_RTSP_URL=rtsp://cameras:8554
+      - AIN_S3_ENDPOINT=http://minio:9000
+      # What a BROWSER can reach. A presigned URL is signed for one host, so
+      # signing with `minio:9000` produces links only this network can open.
+      - AIN_S3_PUBLIC_ENDPOINT=http://localhost:9000
+      - AIN_S3_ACCESS_KEY=ain
+      - AIN_S3_SECRET_KEY=ainsecret
     # The editor's Save writes cameras.yml, and this container runs as `ain`
     # (uid 10002) against a file owned by the host user. The file is mode 664,
     # so joining its group is enough - and is a much smaller grant than
@@ -329,12 +383,10 @@ services:
       # no geometry is in module.yml. Written in place rather than renamed
       # into position, because renaming onto a bind-mounted FILE is EBUSY.
       - ./config/cameras.yml:/src/config/cameras.yml
-      # Bind-mounted like the config it edits, so tweaking the editor is a
-      # container restart rather than an image rebuild.
-      - ./applications/analytics-api/editor.html:/src/applications/analytics-api/editor.html:ro
-      - clips:/clips
     depends_on:
       clickhouse:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c",
@@ -350,4 +402,6 @@ volumes:
   savant_models:
   savant_downloads:
   recordings:
-  clips:
+  # Rendered clips. The bucket's lifecycle rule expires them, so nothing
+  # in the API prunes.
+  minio_data:

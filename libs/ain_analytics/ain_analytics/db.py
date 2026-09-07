@@ -8,12 +8,13 @@ Every statement here is `IF NOT EXISTS`.
 """
 
 import logging
-import os
 import threading
 import time
 
 import clickhouse_connect
 from clickhouse_connect.driver import client as ch_client
+
+from ain_analytics import settings
 
 _LOG = logging.getLogger(__name__)
 
@@ -116,7 +117,8 @@ def connect(retries: int = 30, delay: float = 2.0) -> ch_client.Client:
 	Raises:
 		RuntimeError: The server never answered.
 	"""
-	settings = {
+	options = settings.get()
+	query_settings = {
 		# Synchronous inserts, deliberately. `async_insert` exists to stop
 		# row-by-row writes making one part per row - and the ingest already
 		# batches in the client, so that problem is solved upstream and the
@@ -137,12 +139,12 @@ def connect(retries: int = 30, delay: float = 2.0) -> ch_client.Client:
 	for attempt in range(retries):
 		try:
 			client = clickhouse_connect.get_client(
-				host=os.environ.get('CLICKHOUSE_HOST', 'clickhouse'),
-				port=int(os.environ.get('CLICKHOUSE_PORT', '8123')),
-				username=os.environ.get('CLICKHOUSE_USER', 'ain'),
-				password=os.environ.get('CLICKHOUSE_PASSWORD', 'ain'),
-				database=os.environ.get('CLICKHOUSE_DATABASE', 'default'),
-				settings=settings,
+				host=options.clickhouse_host,
+				port=options.clickhouse_port,
+				username=options.clickhouse_user,
+				password=options.clickhouse_password,
+				database=options.clickhouse_database,
+				settings=query_settings,
 			)
 			client.command('SELECT 1')
 			return client

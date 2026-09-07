@@ -17,9 +17,10 @@ minute" are different problems.
 import logging
 import time
 
-# A minute. Long enough that a steady fault is one line a minute instead of a
-# wall; short enough that two bursts an hour apart read as two events.
-PERIOD_SECONDS = 60.0
+from ain_analytics import settings
+
+# A minute by default - see settings.warn_period_seconds for why.
+PERIOD_SECONDS = settings.get().warn_period_seconds
 
 _last: dict[object, float] = {}
 _suppressed: dict[object, int] = {}
