@@ -11,9 +11,13 @@ api: yes
 apiAddress: :9997
 
 # MediaMTX allows the control API from localhost only, which inside a
-# container means the container itself. The port is deliberately NOT
-# published to the host, so widening this to the compose network does not
-# widen it to the machine.
+# container means the container itself - and analytics-api asks it, from a
+# different container, which is what needs widening.
+#
+# Widened to Docker's private ranges rather than to every address: 9997 is
+# not published to the host at all, so this is already contained, and a
+# permission scoped to where the caller actually lives costs nothing to
+# write and does not have to be revisited if that ever changes.
 authInternalUsers:
   - user: any
     pass:
@@ -24,7 +28,7 @@ authInternalUsers:
       - action: playback
   - user: any
     pass:
-    ips: []
+    ips: ['127.0.0.1', '::1', '172.16.0.0/12', '192.168.0.0/16', '10.0.0.0/8']
     permissions:
       - action: api
 
@@ -96,12 +100,19 @@ paths:
   # about three times the work for no extra information. -g 15 then puts a
   # keyframe every second, which is what lets HLS cut one-second segments.
   #
-  # The bitrate cap is what makes clips possible. `ultrafast` with no rate
-  # control spends about 5.5 Mbit/s a camera, and MediaMTX records this same
-  # stream - 12.6 GB an hour across five cameras, which is why the recording
-  # window had to be fifteen minutes, which is why every event older than
-  # that had no clip behind it. Capped, it is a quarter of that, and a
-  # working day of video fits on a disk.
+  # -crf 28 is what makes clips possible. `ultrafast` at the default quality
+  # spends about 5.5 Mbit/s a camera, and MediaMTX records this same stream -
+  # 12.6 GB an hour across five cameras, which is why the recording window
+  # had to be fifteen minutes, which is why every event older than that had
+  # no clip behind it.
+  #
+  # CRF and nothing else, deliberately. Adding -maxrate/-bufsize on top cut
+  # the same amount again and engaged VBV rate control, which buffers: the
+  # frame the adapter received carried a timestamp ~5s older than the one
+  # MediaMTX stamped on the HLS segment holding it, so the detections landed
+  # BEHIND the video instead of ahead of it and the browser overlay had
+  # nothing to draw at the live edge. Constant-quality encoding has no such
+  # buffer.
   #
   # -rtsp_transport tcp on the way in is not optional: over UDP this hop drops
   # packets even on loopback, and a dropped RTP packet is a dropped frame.
@@ -115,7 +126,7 @@ paths:
       ffmpeg -hide_banner -loglevel error -stream_loop -1 -re
       -i /videos/$MTX_PATH.mp4 -an -c:v libx264 -preset ultrafast
       -tune zerolatency -fps_mode cfr -r 15 -g 15
-      -crf 28 -maxrate 2500k -bufsize 5000k
+      -crf 28
       -f rtsp -rtsp_transport tcp
       rtsp://localhost:$RTSP_PORT/$MTX_PATH
     runOnDemandRestart: yes

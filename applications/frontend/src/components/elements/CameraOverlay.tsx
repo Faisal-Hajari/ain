@@ -15,12 +15,20 @@ import type { GeometryPart, NamedGeometry, OverlayFrame, OverlayResponse } from 
  * are really one. The stored detections carry absolute timestamps, and every
  * HLS segment carries EXT-X-PROGRAM-DATE-TIME, which hls.js exposes as
  * `playingDate`: the wall-clock instant of the frame actually being shown.
- * The latency ordering does the rest. Measured on this stack: the newest HLS
- * segment is ~2.5s behind real time and hls.js starts three segments back
- * from the live edge, so the frame on screen is ~6s old; the metadata path
- * lands in ClickHouse ~1.8s behind. The boxes are therefore in the database
- * about four seconds before the frame they describe reaches the screen, and
- * no player tuning is needed to keep it that way.
+ * The latency ordering does the rest, and it is tighter than it looks.
+ * Measured on this stack: the newest HLS segment is ~1.6s behind real time
+ * and the newest detection ~3.2s, so at the server edge the metadata is
+ * BEHIND. What saves it is the player: hls.js starts three segments back
+ * from the live edge, putting the frame on screen ~5.2s old against boxes
+ * 3.2s old - about two seconds of margin, and all of it comes from that
+ * buffer rather than from the pipeline being quick.
+ *
+ * Two things eat that margin, and both were measured doing it: VBV rate
+ * control on the transcode (-maxrate/-bufsize) delayed the frame the
+ * adapter saw by ~2s relative to the segment MediaMTX stamped, and a
+ * nvstreammux batch_size matched to the camera count cost another 2.4s.
+ * Neither shows up as a queue anywhere - they are clock offsets, not
+ * backlogs, so the only way to see them is to compare the two paths.
  */
 
 /** How much video each fetch covers. One request per camera per few seconds. */
@@ -78,24 +86,53 @@ export function contentBox(video: Pick<HTMLVideoElement, 'videoWidth' | 'videoHe
   }
 }
 
+/** A window of detections with its timestamps already parsed. */
+export interface Window {
+  frames: OverlayFrame[]
+  /** Milliseconds per frame, ascending, index-aligned with `frames`. */
+  times: number[]
+}
+
+/**
+ * Parses a fetched window once, so the draw loop never has to.
+ *
+ * The server returns frames in time order, which is what lets the lookup
+ * below be a binary search.
+ */
+export function toWindow(frames: OverlayFrame[]): Window {
+  return { frames, times: frames.map((frame) => Date.parse(frame.ts)) }
+}
+
 /**
  * The stored frame nearest an instant, or null when none is close enough.
  *
  * Exported, with `contentBox`, because between them they are the whole of
  * what puts a box in the right place: everything else in this file is
  * plumbing, and these two are worth a test.
+ *
+ * A binary search over pre-parsed times rather than a scan that re-parses
+ * every timestamp: this runs once per animation frame per tile, so at nine
+ * tiles and 60 fps a linear pass was ~40 000 Date.parse calls a second.
  */
-export function nearestFrame(frames: OverlayFrame[], at: number): OverlayFrame | null {
-  let best: OverlayFrame | null = null
-  let bestGap = Infinity
-  for (const frame of frames) {
-    const gap = Math.abs(Date.parse(frame.ts) - at)
-    if (gap < bestGap) {
-      best = frame
-      bestGap = gap
-    }
+export function nearestFrame(window: Window, at: number): OverlayFrame | null {
+  const { times, frames } = window
+  if (!times.length) return null
+
+  let low = 0
+  let high = times.length - 1
+  while (low < high) {
+    const mid = (low + high) >> 1
+    if (times[mid]! < at) low = mid + 1
+    else high = mid
   }
-  return bestGap <= MATCH_TOLERANCE_MS ? best : null
+  // `low` is the first frame at or after `at`; its neighbour may be closer.
+  // A tie goes to the earlier frame: its boxes were in the database before
+  // the instant being drawn, which the later one's were not.
+  let best = low
+  if (low > 0 && Math.abs(times[low - 1]! - at) <= Math.abs(times[low]! - at)) {
+    best = low - 1
+  }
+  return Math.abs(times[best]! - at) <= MATCH_TOLERANCE_MS ? frames[best]! : null
 }
 
 /** Every part of every zone and line that belongs to one camera. */
@@ -121,7 +158,7 @@ export function CameraOverlay({
   showZones: boolean
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const frames = useRef<OverlayFrame[]>([])
+  const frames = useRef<Window>({ frames: [], times: [] })
   const zones = useZones({ enabled: showZones })
   const shapes = zones.data
   const geometry = useMemo(
@@ -136,7 +173,7 @@ export function CameraOverlay({
   // window is ~75 frames and a few hundred boxes, which is tens of kilobytes.
   useEffect(() => {
     if (!showBoxes) {
-      frames.current = []
+      frames.current = toWindow([])
       return
     }
     let cancelled = false
@@ -154,12 +191,12 @@ export function CameraOverlay({
           start: new Date(at.getTime() - 1_000).toISOString(),
           end: new Date(at.getTime() + WINDOW_MS).toISOString(),
         })
-        if (!cancelled) frames.current = body.frames
+        if (!cancelled) frames.current = toWindow(body.frames)
       } catch {
         // No detections for this camera yet, or the analytics service is
         // still starting. A tile with no boxes is the correct rendering of
         // "nothing to draw"; an error message over live video is not.
-        if (!cancelled) frames.current = []
+        if (!cancelled) frames.current = toWindow([])
       }
     }
 

@@ -95,6 +95,14 @@ export function ElementCard({ element, filters }: { element: ElementDef; filters
 
       {element.cameras?.length || element.drilldown ? (
         <CardFooter>
+          {/* A card whose numbers are invented says so. The two payloads are
+              deliberately identical in shape, so without this the only card
+              a reader can trust is one they have already gone and checked. */}
+          {query.data?.source === 'generated' ? (
+            <span title={t.sampleDataWhy}>
+              <Chip severity="info">{t.sampleData}</Chip>
+            </span>
+          ) : null}
           {element.cameras?.length ? (
             <span className="flex flex-wrap items-center gap-1">
               <span className="me-0.5">{t.cameras}</span>

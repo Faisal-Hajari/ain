@@ -17,6 +17,7 @@ breach does not send forty messages.
 import dataclasses
 import datetime
 import uuid
+from concurrent import futures
 
 from ain_backend import catalogue
 from ain_backend import formatting
@@ -216,12 +217,18 @@ def list_rules(
 		The rules, newest first. Scoping rules to a branch or a venue is
 		still open, so the active filters do not narrow this list.
 	"""
-	return models.AlertRuleList(
-		rules=[
-			localise(_stored(row), locale, range_key)
-			for row in store.rows()
-		]
-	)
+	rules = [_stored(row) for row in store.rows()]
+	if not rules:
+		return models.AlertRuleList(rules=[])
+	# Evaluated side by side, not one after another. Each rule is its own
+	# query against the analytics service, and ten of them in series is ten
+	# times the latency against a client that gives up long before that -
+	# which reads as every rule being unevaluable rather than slow.
+	with futures.ThreadPoolExecutor(max_workers=min(8, len(rules))) as pool:
+		localised = list(
+			pool.map(lambda rule: localise(rule, locale, range_key), rules)
+		)
+	return models.AlertRuleList(rules=localised)
 
 
 def create_rule(

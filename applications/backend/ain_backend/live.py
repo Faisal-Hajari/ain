@@ -14,6 +14,7 @@ decided here, which is what keeps Arabic in one place.
 
 import dataclasses
 import datetime
+import logging
 import urllib.parse
 
 from ain_backend import analytics
@@ -21,6 +22,8 @@ from ain_backend import catalogue
 from ain_backend import formatting
 from ain_backend import i18n
 from ain_backend import models
+
+_LOG = logging.getLogger(__name__)
 
 _Kind = catalogue.SourceKind
 _TREND_POINTS = 12
@@ -471,6 +474,7 @@ def instances(context) -> models.InstanceLog | None:
 			element_id=spec.id,
 			title=context.text(spec.title),
 			total=0,
+			source=models.DataSource.CAMERAS,
 			instances=[],
 		)
 	params = analytics.window(
@@ -509,6 +513,7 @@ def instances(context) -> models.InstanceLog | None:
 		element_id=spec.id,
 		title=context.text(spec.title),
 		total=body['count'],
+		source=models.DataSource.CAMERAS,
 		instances=entries,
 	)
 
@@ -770,4 +775,12 @@ def build(context) -> Built | None:
 		# A response shaped differently from what this expects is a bug,
 		# but not one worth blanking the dashboard over: the generated
 		# data takes over exactly as it does when the service is down.
+		# Logged, though - silently, the two are indistinguishable, and
+		# the one that needs fixing is the one that leaves no trace.
+		_LOG.warning(
+			'analytics response for %s could not be built; falling back '
+			'to generated data',
+			context.spec.id,
+			exc_info=True,
+		)
 		return None

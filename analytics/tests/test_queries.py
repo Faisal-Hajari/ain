@@ -2,6 +2,7 @@
 
 import datetime
 import pathlib
+import pathlib
 
 import pytest
 
@@ -155,3 +156,106 @@ def test_a_stream_that_gives_no_frame_is_an_error(monkeypatch):
 	)
 	with pytest.raises(frames.FrameError, match='Connection refused'):
 		frames.still('cam3')
+
+
+def test_an_event_id_is_wide_enough_not_to_collide():
+	"""The id names a cached file, so a collision serves the wrong video.
+
+	Thirty-two bits over MAX_VISITS events collides inside a single
+	response about one time in twenty. Sixty-four does not.
+	"""
+	from ain_analytics import events
+
+	assert len(events._event_id('x').split('-')[-1]) == 16
+	seen = {
+		events._event_id('long-wait', 'queue', '12', track, '2026-09-07')
+		for track in range(20_000)
+	}
+	assert len(seen) == 20_000
+
+
+def test_inserts_are_durable_before_the_offset_moves():
+	"""Otherwise the consumer commits an offset for rows still in memory.
+
+	An insert that returns early plus an immediate commit is at-most-once,
+	and the schema is built to tolerate the opposite.
+	"""
+	import inspect
+
+	from ain_analytics import db
+
+	assert "'async_insert': 0" in inspect.getsource(db.connect)
+	# And the commit still follows the insert rather than running on a
+	# timer. Read as text: importing ingest needs savant_rs, which only
+	# exists in the ingest image.
+	loop = (
+		pathlib.Path(__file__).resolve().parent.parent
+		/ 'ain_analytics' / 'ingest.py'
+	).read_text()
+	assert loop.index('client.insert') < loop.index('consumer.commit')
+	assert "'enable.auto.commit': False" in loop
+
+
+def test_camera_horizons_are_asked_once_and_cached(monkeypatch):
+	"""Five cameras in series is five timeouts behind a four-second caller."""
+    
+	import datetime
+
+	from ain_analytics import feeds
+
+	asked = []
+
+	def fake(stream):
+		asked.append(stream)
+		return datetime.datetime(2026, 9, 7, tzinfo=datetime.timezone.utc)
+
+	monkeypatch.setattr(feeds, '_horizon', {})
+	monkeypatch.setattr(feeds, 'recorded_from', fake)
+
+	first = feeds.horizons(['cam3', 'cam4', 'cam5'])
+	assert set(first) == {'cam3', 'cam4', 'cam5'}
+	assert sorted(asked) == ['cam3', 'cam4', 'cam5']
+
+	feeds.horizons(['cam3', 'cam4', 'cam5'])
+	assert len(asked) == 3, 'the second round should come from the cache'
+
+
+def test_a_bow_tie_zone_stops_the_service_starting(tmp_path):
+	"""pointInPolygon does not fail on one; it answers nonsense."""
+	from ain_analytics import config
+
+	path = tmp_path / 'cameras.yml'
+	path.write_text(
+		"cameras:\n  '03': {stream: cam3}\n"
+		'zones:\n  bowtie:\n    parts:\n'
+		"      - camera: '03'\n"
+		'        points: [[0,0],[1,1],[1,0],[0,1]]\n'
+	)
+	with pytest.raises(config.ConfigError, match='bow-tie'):
+		config.load(path)
+
+
+def test_pruning_survives_a_file_vanishing(tmp_path, monkeypatch):
+	"""Sorting by st_mtime raises from inside the sort key otherwise."""
+	from ain_analytics import clips
+
+	monkeypatch.setattr(clips, '_CACHE', tmp_path)
+	monkeypatch.setattr(clips, '_CACHE_LIMIT', 1)
+	for name in ('a.mp4', 'b.mp4', 'c.mp4'):
+		(tmp_path / name).write_bytes(b'x')
+
+	real_stat = pathlib.Path.stat
+
+	def flaky(self, *args, **kwargs):
+		if self.name == 'b.mp4':
+			raise FileNotFoundError(self)
+		return real_stat(self, *args, **kwargs)
+
+	monkeypatch.setattr(pathlib.Path, 'stat', flaky)
+	clips._prune()  # must not raise
+	monkeypatch.undo()
+	# The one that vanished mid-walk is skipped, not fatal; of the two that
+	# could be read, the limit keeps the newest.
+	left = sorted(p.name for p in tmp_path.glob('*.mp4'))
+	assert 'b.mp4' in left
+	assert len(left) == 2

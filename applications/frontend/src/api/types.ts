@@ -169,10 +169,18 @@ export type ElementPayload =
   | { type: 'line' | 'histogram'; data: SeriesPayload }
   | { type: 'camera-grid'; data: CameraGridPayload }
 
+/**
+ * Where a card's numbers came from. The two are the same shapes on purpose,
+ * which is exactly why the wire says which: a card that fell back because a
+ * query timed out looks identical to one that measured something.
+ */
+export type DataSource = 'cameras' | 'generated'
+
 export type ElementResponse = ElementPayload & {
   elementId: string
   /** ISO timestamp of the underlying data, not of the request. */
   updatedAt: string
+  source: DataSource
 }
 
 export interface Instance {
@@ -190,6 +198,7 @@ export interface InstanceLog {
   elementId: string
   title: string
   total: number
+  source: DataSource
   instances: Instance[]
 }
 

@@ -16,13 +16,22 @@
 name: ain-people
 
 parameters:
-  # One batch per push, sized to the camera count.
+  # Ten, with five cameras - measured, not inherited. Matching this to the
+  # camera count looks tidier and costs 2.4 seconds of end-to-end latency:
+  # at 5 the detections landed 4.3s behind the frame, at 10 they land 1.8s
+  # behind, with every pipeline queue empty in both cases. The overlay only
+  # works while the metadata stays AHEAD of the video, so the headroom is
+  # the point.
+  #
+  # Changing it means rebuilding the TensorRT engine - the batch size is
+  # baked into the plan, and an engine is only valid for the size it was
+  # built with.
   batch_size: 10
   # 40 ms. The default 2000 us is tuned for files; with live sources a batch
   # never fills in that time and throughput collapses.
   batched_push_timeout: 40000
-  # Ten live cameras, plus headroom: dead-but-not-yet-evicted streams count
-  # against this and the pipeline aborts when it is exceeded.
+  # Five live cameras, plus room to add some back: dead-but-not-yet-evicted
+  # streams count against this and the pipeline aborts when it is exceeded.
   max_parallel_streams: 16
   # (SOURCE_TIMEOUT is set in compose, not here: it lives under
   # pipeline.source.properties, and the default 10s eviction is too eager for

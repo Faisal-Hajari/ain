@@ -215,12 +215,27 @@ Payload = (
 )
 
 
+class DataSource(enum.StrEnum):
+	"""Where a card's numbers came from.
+
+	The two are the same shapes and are meant to be interchangeable, which
+	is exactly why the wire has to say which one it is: a card that fell
+	back because a query timed out looks identical to one that measured
+	something, and a dashboard whose whole claim is "these are the real
+	numbers" cannot afford that to be invisible.
+	"""
+
+	CAMERAS = 'cameras'
+	GENERATED = 'generated'
+
+
 class ElementResponse(Model):
 	"""One card's payload, discriminated by `type`."""
 
 	element_id: str
 	updated_at: str
 	type: ElementType
+	source: DataSource
 	data: Payload
 
 
@@ -242,6 +257,7 @@ class InstanceLog(Model):
 	element_id: str
 	title: str
 	total: int
+	source: DataSource
 	instances: list[Instance]
 
 

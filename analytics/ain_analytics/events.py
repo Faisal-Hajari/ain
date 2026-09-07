@@ -230,9 +230,16 @@ def _event_id(kind: str, *parts: object) -> str:
 	Returns:
 		An id the frontend can cache on and a clip URL can be built
 		from. Re-asking the same question must not produce new ids.
+
+		Sixty-four bits, not thirty-two. A full response can carry
+		`queries.MAX_VISITS` events, and at 20 000 ids a 32-bit digest
+		collides within one response about one time in twenty - which
+		would be survivable if the id were only a key, and is not,
+		because the clip cache is a file named after it. A collision
+		there serves one customer's video for another's alert.
 	"""
 	digest = hashlib.blake2b(
-		'|'.join(str(part) for part in parts).encode(), digest_size=4
+		'|'.join(str(part) for part in parts).encode(), digest_size=8
 	)
 	return f'{kind}-{digest.hexdigest()}'
 

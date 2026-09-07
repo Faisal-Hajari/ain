@@ -60,7 +60,10 @@ CMD ["uvicorn", "ain_analytics.api:app", "--host", "0.0.0.0", "--port", "8100"]
 
 
 # ------------------------------------------------------------- ingest ----
-FROM ghcr.io/insight-platform/savant-adapters-py:latest AS ingest
+# Pinned by digest to the same Savant release the module runs, because the
+# message format between them is versioned and :latest on both ends is how
+# the two silently stop agreeing.
+FROM ghcr.io/insight-platform/savant-adapters-py@sha256:4b09a32cd5ded9459f3f834f4a6263263f4edb4ac7cb70ab7cfb059201e81f3c AS ingest
 
 WORKDIR /app
 

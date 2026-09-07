@@ -19,6 +19,9 @@ exactly what a viewer needs to know.
 import datetime
 import logging
 import os
+import threading
+import time
+from concurrent import futures
 
 import httpx
 
@@ -29,6 +32,13 @@ _LOG = logging.getLogger(__name__)
 _MEDIAMTX = os.environ.get('AIN_MEDIAMTX_URL', 'http://cameras:9997')
 _PLAYBACK = os.environ.get('AIN_PLAYBACK_URL', 'http://cameras:9996')
 _TIMEOUT = float(os.environ.get('AIN_MEDIAMTX_TIMEOUT', '3'))
+# Recording rolls at segment boundaries, so the horizon moves about once a
+# minute. Caching it briefly turns a burst of dashboard requests into one
+# round of questions.
+_HORIZON_TTL = float(os.environ.get('AIN_HORIZON_TTL', '20'))
+
+_horizon: dict[str, tuple[float, datetime.datetime | None]] = {}
+_horizon_lock = threading.Lock()
 
 
 def ready_streams() -> set[str] | None:
@@ -92,6 +102,44 @@ def recorded_from(stream: str) -> datetime.datetime | None:
 	return ranges[0][0] if ranges else None
 
 
+def horizons(streams: list[str]) -> dict[str, datetime.datetime | None]:
+	"""The oldest recorded instant for several streams at once.
+
+	Args:
+		streams: The MediaMTX paths to ask about.
+
+	Returns:
+		One entry per stream, None where nothing is recorded.
+
+	Asked concurrently and cached briefly. MediaMTX's playback API takes
+	one path per call - `/list` with no path answers 400 - so this cannot
+	collapse into a single request. Asked in series, five cameras is five
+	times the timeout behind a caller that gives up in four seconds, and
+	one slow stream would report every camera as having no video.
+	"""
+	now = time.monotonic()
+	answers: dict[str, datetime.datetime | None] = {}
+	ask = []
+	with _horizon_lock:
+		for stream in streams:
+			cached = _horizon.get(stream)
+			if cached and now - cached[0] < _HORIZON_TTL:
+				answers[stream] = cached[1]
+			else:
+				ask.append(stream)
+	if not ask:
+		return answers
+
+	with futures.ThreadPoolExecutor(max_workers=min(8, len(ask))) as pool:
+		fetched = dict(zip(ask, pool.map(recorded_from, ask)))
+	stamp = time.monotonic()
+	with _horizon_lock:
+		for stream, oldest in fetched.items():
+			_horizon[stream] = (stamp, oldest)
+	answers.update(fetched)
+	return answers
+
+
 def status(settings: config.Config, ready: set[str] | None) -> list[dict]:
 	"""Reports every camera the pipeline is configured for.
 
@@ -106,10 +154,13 @@ def status(settings: config.Config, ready: set[str] | None) -> list[dict]:
 		third answer, and collapsing it into "it is down" would turn one
 		unreachable control API into ten cameras reported dead.
 	"""
+	oldest_by_stream = horizons(
+		[c['stream'] for c in settings.cameras.values() if c.get('stream')]
+	)
 	entries = []
 	for camera_id, camera in settings.cameras.items():
 		stream = camera.get('stream')
-		oldest = recorded_from(stream) if stream else None
+		oldest = oldest_by_stream.get(stream) if stream else None
 		entries.append(
 			{
 				'id': camera_id,

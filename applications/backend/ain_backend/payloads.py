@@ -208,24 +208,35 @@ def _build_kpi(context: _Context) -> models.KpiPayload:
 	)
 
 
-def camera_status(seed_key: str) -> dict[str, bool]:
+@dataclasses.dataclass(frozen=True)
+class CameraStatus:
+	"""Which cameras are up, and whether anything actually looked."""
+
+	up: dict[str, bool]
+	measured: bool
+
+
+def camera_status(seed_key: str) -> CameraStatus:
 	"""Reports which cameras are up.
 
 	Args:
 		seed_key: The filters, language excluded, as a stable key.
 
 	Returns:
-		True per camera id that is publishing. Real when there is a
-		pipeline to ask - a camera is up when it is one the pipeline is
-		configured for AND its stream server has it - and a stable roll
-		otherwise.
+		True per camera id that is publishing, and whether that came
+		from the pipeline. Real when there is one to ask - a camera is
+		up when it is configured AND its stream server has it - and a
+		stable roll otherwise.
 
 		Feed health, the downtime chart and the grid all read this one
 		answer, so the three can never disagree about how many cameras
-		are down.
+		are down - and `measured` travels with it, so no caller has to
+		re-derive the fallback and risk disagreeing about that too.
 	"""
 	real = live.feed_status()
-	return real if real is not None else rolled_camera_status(seed_key)
+	if real is not None:
+		return CameraStatus(up=real, measured=True)
+	return CameraStatus(up=rolled_camera_status(seed_key), measured=False)
 
 
 def rolled_camera_status(seed_key: str) -> dict[str, bool]:
@@ -263,8 +274,8 @@ def _build_camera_status(context: _Context) -> models.StatGroupPayload:
 		would be the same false claim the rest of this design refuses to
 		make, dressed as a chart.
 	"""
-	real = live.feed_status()
-	status = real if real is not None else rolled_camera_status(context.seed_key)
+	answer = camera_status(context.seed_key)
+	status = answer.up
 	online = sum(status.values())
 	total = len(status)
 	offline = total - online
@@ -290,7 +301,7 @@ def _build_camera_status(context: _Context) -> models.StatGroupPayload:
 			),
 		),
 	]
-	if real is not None:
+	if answer.measured:
 		return models.StatGroupPayload(stats=stats)
 
 	walk = _walk(
@@ -449,7 +460,7 @@ def _camera_label(camera_id: str, locale: i18n.Locale) -> str:
 
 def _build_camera_grid(context: _Context) -> models.CameraGridPayload:
 	"""Every camera tile, with its status and stream."""
-	status = camera_status(context.seed_key)
+	status = camera_status(context.seed_key).up
 	feeds = []
 	for camera in catalogue.CAMERAS:
 		online = status[camera.id]
@@ -543,12 +554,14 @@ def build_element(
 			element_id=spec.id,
 			updated_at=built.updated_at,
 			type=spec.type,
+			source=models.DataSource.CAMERAS,
 			data=built.data,
 		)
 	return models.ElementResponse(
 		element_id=spec.id,
 		updated_at=_updated_at(spec.updates),
 		type=spec.type,
+		source=models.DataSource.GENERATED,
 		data=_BUILDERS[spec.type](context),
 	)
 
@@ -599,6 +612,7 @@ def build_instance_log(
 		element_id=spec.id,
 		title=context.text(spec.title),
 		total=total,
+		source=models.DataSource.GENERATED,
 		instances=instances,
 	)
 

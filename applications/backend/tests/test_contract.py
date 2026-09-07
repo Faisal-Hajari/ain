@@ -654,7 +654,9 @@ def test_an_unwatched_camera_reports_no_signal(monkeypatch):
 			]
 		},
 	)
-	status = payloads.camera_status('')
+	answer = payloads.camera_status('')
+	assert answer.measured is True
+	status = answer.up
 	assert status['03'] is True
 	assert status['04'] is True
 	# Configured but its stream server does not have it.
@@ -704,10 +706,11 @@ def test_feed_health_counts_what_the_grid_shows(client, monkeypatch):
 
 def test_no_pipeline_falls_back_to_the_generated_roll(monkeypatch):
 	monkeypatch.setattr(live.analytics, 'configured', lambda: False)
-	status = payloads.camera_status('branch=olaya')
-	assert set(status) == {camera.id for camera in catalogue.CAMERAS}
+	answer = payloads.camera_status('branch=olaya')
+	assert answer.measured is False
+	assert set(answer.up) == {camera.id for camera in catalogue.CAMERAS}
 	# Deterministic, so a card does not flicker between polls.
-	assert status == payloads.camera_status('branch=olaya')
+	assert answer.up == payloads.camera_status('branch=olaya').up
 
 
 def test_real_feed_health_draws_no_invented_history(client, monkeypatch):
@@ -748,3 +751,98 @@ def test_invented_feed_health_still_draws_its_line(client, monkeypatch):
 		stat['value'] for stat in payload['stats'] if stat['id'] == 'offline'
 	)
 	assert payload['trend']['points'][-1]['offline'] == int(offline)
+
+
+def test_the_wire_says_whether_a_card_is_real(client, monkeypatch):
+	"""The two payloads are the same shape on purpose.
+
+	Which is exactly why the response has to say which one it is: a card
+	that fell back because a query timed out is indistinguishable from
+	one that measured something, and this dashboard's whole claim is that
+	the numbers are measured.
+	"""
+	monkeypatch.setattr(live.analytics, 'configured', lambda: False)
+	generated = client.get('/api/elements/queue-length', params=FILTERS).json()
+	assert generated['source'] == 'generated'
+
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(
+		live.analytics,
+		'get',
+		lambda path, params: {
+			'end': '2026-09-07T09:00:00+00:00',
+			'latest': 3,
+			'buckets': [
+				{'ts': '2026-09-07T08:00:00+00:00', 'mean': 3.0, 'peak': 4}
+			],
+		},
+	)
+	measured = client.get('/api/elements/queue-length', params=FILTERS).json()
+	assert measured['source'] == 'cameras'
+	# Same shape either way - which is the point.
+	assert measured['type'] == generated['type']
+
+
+def test_an_instance_log_says_where_it_came_from(client, monkeypatch):
+	monkeypatch.setattr(live.analytics, 'configured', lambda: False)
+	log = client.get(
+		'/api/elements/congestion-count/instances', params=FILTERS
+	).json()
+	assert log['source'] == 'generated'
+
+
+def test_a_response_this_cannot_read_is_logged_not_swallowed(monkeypatch, caplog):
+	"""A bug and a service being down must not look the same in the log."""
+	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
+	monkeypatch.setattr(
+		live.analytics, 'get', lambda path, params: {'nonsense': True}
+	)
+	context = payloads._context(
+		catalogue.ELEMENTS_BY_ID['queue-length'], '', i18n.Locale.EN, 'today'
+	)
+	with caplog.at_level('WARNING'):
+		assert live.build(context) is None
+	assert any('queue-length' in record.message for record in caplog.records)
+
+
+def test_rules_are_evaluated_together_not_one_after_another(monkeypatch):
+	"""Ten rules in series is ten times the latency of one.
+
+	Each rule is its own query against the analytics service, behind a
+	client that gives up in four seconds - so evaluated in series, a
+	handful of rules reads as every rule being unevaluable rather than
+	slow.
+	"""
+	import threading
+	import time
+
+	threads = set()
+
+	def slow(spec, comparator, threshold, range_key):
+		threads.add(threading.get_ident())
+		time.sleep(0.25)
+		return 1
+
+	monkeypatch.setattr(alerts.live, 'breaches', slow)
+	store.clear()
+	for monitor in ('queue-length', 'footfall', 'live-occupancy'):
+		alerts.create_rule(
+			models.AlertRuleDraft(
+				monitor_id=monitor,
+				comparator=models.Comparator.ABOVE,
+				threshold=1,
+			),
+			i18n.Locale.EN, 'olaya', 'cafe',
+		)
+
+	# create_rule localises its own result, so it evaluates too - measure
+	# only the listing.
+	threads.clear()
+	started = time.monotonic()
+	rules = alerts.list_rules(i18n.Locale.EN, 'today')
+	elapsed = time.monotonic() - started
+
+	assert len(rules.rules) == 3
+	assert len(threads) == 3, 'each rule should be evaluated on its own thread'
+	# In series this is 0.75s; side by side it is a little over 0.25s.
+	assert elapsed < 0.6, f'took {elapsed:.2f}s, which is serial'

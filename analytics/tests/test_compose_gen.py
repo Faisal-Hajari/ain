@@ -75,16 +75,20 @@ def test_the_input_socket_is_not_pub_sub(rendered):
 		), name
 
 
-def test_a_bow_tie_polygon_is_rejected():
+def test_the_generator_validates_what_the_service_will(tmp_path):
+	# The generator used to carry its own copy of the geometry checks. It
+	# now runs the service's loader, so a config this accepts is one
+	# analytics-api will start on.
+	path = tmp_path / 'cameras.yml'
+	path.write_text(
+		"cameras:\n  '03': {stream: cam3}\n"
+		'zones:\n  bowtie:\n    parts:\n'
+		"      - camera: '03'\n"
+		'        points: [[0,0],[1,1],[1,0],[0,1]]\n'
+	)
 	with pytest.raises(compose_gen.ConfigError, match='bow-tie'):
-		compose_gen._check_polygon(
-			'zone test', [[0, 0], [1, 1], [1, 0], [0, 1]]
-		)
+		compose_gen.load_config(path)
 
 
-def test_a_convex_polygon_is_accepted():
-	compose_gen._check_polygon('zone test', [[0, 0], [1, 0], [1, 1], [0, 1]])
-
-
-def test_the_real_config_has_no_bow_ties():
+def test_the_real_config_passes_that_validation():
 	compose_gen.load_config()

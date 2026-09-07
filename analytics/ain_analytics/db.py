@@ -117,11 +117,21 @@ def connect(retries: int = 30, delay: float = 2.0) -> ch_client.Client:
 		RuntimeError: The server never answered.
 	"""
 	settings = {
-		# One insert per second per worker still produces a part per insert.
-		# Asynchronous inserts let the server coalesce them, which is what
-		# keeps the merger ahead of 750 rows/sec.
-		'async_insert': 1,
-		'wait_for_async_insert': 0,
+		# Synchronous inserts, deliberately. `async_insert` exists to stop
+		# row-by-row writes making one part per row - and the ingest already
+		# batches in the client, so that problem is solved upstream and the
+		# server-side buffer only adds a place for rows to sit.
+		#
+		# Where they sat mattered: with `wait_for_async_insert: 0` the call
+		# returned while the rows were still in memory and the consumer
+		# committed the offset behind them, which is at-MOST-once and the
+		# opposite of what the schema tolerates. Turning the wait on fixed
+		# the durability and cost 4.7 seconds of end-to-end lag, because
+		# every insert then blocked on the buffer's flush timeout - enough
+		# to put the metadata BEHIND the video and leave the browser overlay
+		# with nothing to draw. Writing straight through is both correct and
+		# fast: one part per half-second batch is nothing for the merger.
+		'async_insert': 0,
 	}
 	last: Exception | None = None
 	for attempt in range(retries):

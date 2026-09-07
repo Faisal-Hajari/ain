@@ -14,13 +14,12 @@ want the GPU, and the GPU is running inference.
 
 import bisect
 import datetime
-import os
-import re
-import threading
 import logging
 import os
 import pathlib
+import re
 import subprocess
+import threading
 
 import cv2
 import httpx
@@ -146,7 +145,7 @@ def _fetch(stream: str, scope: queries.Window, into: pathlib.Path) -> None:
 		raise ClipError(f'playback returned an empty clip for {stream}')
 
 
-def _boxes_by_second(
+def _boxes_by_offset(
 	client: ch_client.Client, camera: str, scope: queries.Window
 ) -> dict[int, list[dict]]:
 	"""Groups stored detections by the millisecond they belong to.
@@ -352,12 +351,12 @@ def render(
 			return target
 		try:
 			_fetch(stream, scope, raw)
-			_encode(raw, partial, _boxes_by_second(client, camera, scope))
+			_encode(raw, partial, _boxes_by_offset(client, camera, scope))
 			os.replace(partial, target)
+			_prune()
 		finally:
 			raw.unlink(missing_ok=True)
 			partial.unlink(missing_ok=True)
-	_prune()
 	return target
 
 
@@ -380,10 +379,22 @@ def _missing(event_id: str, scope: queries.Window) -> queries.Window:
 
 
 def _prune() -> None:
-	"""Drops the oldest clips once the cache grows past its limit."""
-	clips = sorted(
-		(path for path in _CACHE.glob('*.mp4') if '.part.' not in path.name),
-		key=lambda path: path.stat().st_mtime,
-	)
-	for path in clips[: max(0, len(clips) - _CACHE_LIMIT)]:
+	"""Drops the oldest clips once the cache grows past its limit.
+
+	Called while holding the render semaphore, so two renders finishing
+	together do not both walk the directory - and every stat is guarded
+	anyway, because a file can still vanish underneath this one: sorting
+	by `path.stat().st_mtime` raises from inside the sort key, which
+	takes down the request that had already produced its clip.
+	"""
+	aged = []
+	for path in _CACHE.glob('*.mp4'):
+		if '.part.' in path.name or '.raw.' in path.name:
+			continue
+		try:
+			aged.append((path.stat().st_mtime, path))
+		except OSError:
+			continue
+	aged.sort()
+	for _, path in aged[: max(0, len(aged) - _CACHE_LIMIT)]:
 		path.unlink(missing_ok=True)

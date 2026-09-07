@@ -88,7 +88,11 @@ services:
       CLICKHOUSE_USER: ain
       CLICKHOUSE_PASSWORD: ain
     ports:
-      - "8123:8123"
+      # Loopback, for the same reason as analytics-api: the only clients are
+      # track-ingest and analytics-api, in-network, and this is the
+      # detections store behind a dev password. Not flagged in review, but
+      # it is the same exposure and the larger one.
+      - "127.0.0.1:8123:8123"
     volumes:
       # A bind mount rather than a named volume, so the data sits in the repo
       # where it can be inspected. `docker compose down -v` does not clear a
@@ -129,7 +133,11 @@ services:
       - "8554:8554"
       - "8888:8888"
       # Playback server - where the clip endpoint cuts its time ranges from.
-      - "9996:9996"
+      # Bound to loopback: the only consumer is analytics-api, in-network on
+      # http://cameras:9996, and this port hands out two hours of recorded
+      # footage to anyone who asks. Localhost keeps it reachable for a
+      # curl while developing and off the network entirely.
+      - "127.0.0.1:9996:9996"
       # 9997, the control API, is deliberately not published: it is reachable
       # inside the compose network - which is where a feed-health check runs -
       # and nowhere else. Feed liveness does not belong in ClickHouse and
@@ -169,7 +177,13 @@ services:
   # there is one GPU, so the models load once and ten streams are batched
   # through them.
   savant-module:
-    image: ghcr.io/insight-platform/savant-deepstream:latest
+    # Pinned by digest, not :latest. savant-rs serialises the messages this
+    # module emits and the ingest deserialises them, the format is versioned,
+    # and the Dockerfile's whole argument for building ingest on the adapters
+    # image is that the two ends then agree. Floating tags on both ends is
+    # exactly what breaks that - and a Savant release also invalidates the
+    # TensorRT engine on disk. Savant 0.6.1 / savant-rs 1.15.1 / DS 7.1.
+    image: ghcr.io/insight-platform/savant-deepstream@sha256:bb85edbd25d872a7e4900ee8902ffa7f6ead297792e19f77dc4e4b3f605bc585
     command: /opt/savant/module.yml
     runtime: nvidia
     environment:
@@ -280,7 +294,11 @@ services:
       target: api
     image: ain-analytics-api:dev
     ports:
-      - "8100:8100"
+      # Loopback: ain_backend reaches this in-network on
+      # http://analytics-api:8100, and nothing outside the host should be
+      # querying detections or opening the zone editor. Still
+      # http://localhost:8100/editor from this machine.
+      - "127.0.0.1:8100:8100"
     environment:
       - CLICKHOUSE_HOST=clickhouse
       - CLICKHOUSE_USER=ain

@@ -228,6 +228,47 @@ class Config:
 		return entry.get('stream') if entry else None
 
 
+def _segments_cross(a: Point, b: Point, c: Point, d: Point) -> bool:
+	"""Reports whether segments a-b and c-d properly intersect."""
+
+	def side(p: Point, q: Point, r: Point) -> float:
+		return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+
+	d1, d2 = side(c, d, a), side(c, d, b)
+	d3, d4 = side(a, b, c), side(a, b, d)
+	return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0))
+
+
+def _check_simple(where: str, points: tuple[Point, ...]) -> None:
+	"""Rejects a polygon whose edges cross.
+
+	Args:
+		where: What is being checked, for the error message.
+		points: The vertices, in order.
+
+	Raises:
+		ConfigError: Two non-adjacent edges cross.
+
+	A hand-written vertex list very easily describes a bow-tie, and a
+	self-intersecting polygon does not fail - `pointInPolygon` simply
+	answers nonsense for half of it. Checked here, at load, so the
+	service refuses to start on one rather than reporting occupancy
+	nobody can explain.
+	"""
+	count = len(points)
+	edges = [(points[i], points[(i + 1) % count]) for i in range(count)]
+	for i, (a, b) in enumerate(edges):
+		for j, (c, d) in enumerate(edges):
+			# Adjacent edges share a vertex and always "touch".
+			if j <= i or (j - i) % count <= 1 or (i - j) % count <= 1:
+				continue
+			if _segments_cross(a, b, c, d):
+				raise ConfigError(
+					f'{where}: edges {i} and {j} cross - the vertices are '
+					'out of order and this polygon is a bow-tie'
+				)
+
+
 def _points(raw: object, where: str) -> tuple[Point, ...]:
 	"""Converts a config point list, rejecting anything unusable.
 
@@ -302,6 +343,7 @@ def load(path: pathlib.Path | None = None) -> Config:
 			points = _points(raw.get('points'), where)
 			if len(points) < 3:
 				raise ConfigError(f'{where}: a polygon needs three points')
+			_check_simple(where, points)
 			parts.append(
 				Part(camera=camera, points=points, name=raw.get('name', ''))
 			)

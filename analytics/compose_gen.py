@@ -30,6 +30,17 @@ import sys
 import yaml
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
+# The service's own loader, so the generator validates exactly what the
+# service will accept. It needs nothing this script does not already have -
+# yaml and the standard library - and duplicating its ninety lines of
+# geometry checks here is how the two drift into disagreeing about which
+# configs are legal.
+sys.path.insert(0, str(_ROOT / 'analytics'))
+
+from ain_analytics import config as ain_config  # noqa: E402
+
+ConfigError = ain_config.ConfigError
+
 _CAMERAS_YML = _ROOT / 'analytics' / 'cameras.yml'
 _OUTPUT = _ROOT / 'docker-compose.analytics.yml'
 _VIDEO_DIR = _ROOT / 'videos' / 'cctv'
@@ -48,10 +59,6 @@ _HEADER = """\
 # would each loop the same recording independently and drift apart within
 # minutes. Both have to watch the same decoded stream.
 """
-
-
-class ConfigError(Exception):
-	"""cameras.yml describes something that cannot work."""
 
 
 class _Quoted(str):
@@ -77,134 +84,24 @@ yaml.add_representer(
 
 
 def load_config(path: pathlib.Path = _CAMERAS_YML) -> dict:
-	"""Reads and validates cameras.yml.
+	"""Reads cameras.yml, validating it the way the service will.
 
 	Args:
 		path: The config file.
 
 	Returns:
-		The parsed document.
+		The raw parsed document, which is what the renderer needs.
 
 	Raises:
-		ConfigError: A camera, zone or line is unusable.
+		ConfigError: A camera, zone or line is unusable - including a
+			bow-tie polygon, which the loader rejects because
+			pointInPolygon answers nonsense for one rather than failing.
 	"""
-	config = yaml.safe_load(path.read_text())
-	cameras = config.get('cameras') or {}
-	if not cameras:
-		raise ConfigError(f'{path}: no cameras')
-	for camera_id, camera in cameras.items():
-		if not isinstance(camera_id, str):
-			raise ConfigError(
-				f'camera id {camera_id!r} is not a string - quote it, or '
-				"'09' parses as the number 9 and stops matching the "
-				'catalogue'
-			)
-		if not camera.get('stream'):
-			raise ConfigError(f'camera {camera_id}: no stream')
-	_check_geometry(config, set(cameras))
-	return config
-
-
-def _check_points(where: str, points: object) -> None:
-	"""Rejects a polygon or line that cannot be drawn.
-
-	Args:
-		where: What is being checked, for the error message.
-		points: The candidate list of [x, y] pairs.
-
-	Raises:
-		ConfigError: Too few points, or a coordinate outside 0..1.
-	"""
-	if not isinstance(points, list) or len(points) < 2:
-		raise ConfigError(f'{where}: needs at least two points')
-	for point in points:
-		if not isinstance(point, list) or len(point) != 2:
-			raise ConfigError(f'{where}: {point!r} is not an [x, y] pair')
-		if not all(0.0 <= value <= 1.0 for value in point):
-			raise ConfigError(
-				f'{where}: {point!r} is outside 0..1 - coordinates are '
-				'normalised against the frame, not pixels'
-			)
-
-
-def _segments_cross(
-	a: list[float], b: list[float], c: list[float], d: list[float]
-) -> bool:
-	"""Reports whether segments a-b and c-d properly intersect."""
-	def side(p, q, r):
-		return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
-
-	d1, d2 = side(c, d, a), side(c, d, b)
-	d3, d4 = side(a, b, c), side(a, b, d)
-	return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0))
-
-
-def _check_polygon(where: str, points: list) -> None:
-	"""Rejects a polygon that is a bow-tie.
-
-	Args:
-		where: What is being checked, for the error message.
-		points: The vertices, in order.
-
-	Raises:
-		ConfigError: Fewer than three vertices, or two edges cross.
-
-	A hand-written vertex list very easily describes a bow-tie, and a
-	self-intersecting polygon makes point-in-polygon answer nonsense
-	rather than fail - so it is caught here, where it is visible.
-	"""
-	_check_points(where, points)
-	if len(points) < 3:
-		raise ConfigError(f'{where}: a polygon needs at least three points')
-	count = len(points)
-	edges = [(points[i], points[(i + 1) % count]) for i in range(count)]
-	for i, (a, b) in enumerate(edges):
-		for j, (c, d) in enumerate(edges):
-			# Adjacent edges share a vertex and always "touch".
-			if j <= i or (j - i) % count <= 1 or (i - j) % count <= 1:
-				continue
-			if _segments_cross(a, b, c, d):
-				raise ConfigError(
-					f'{where}: edges {i} and {j} cross - the vertices are '
-					'out of order and this polygon is a bow-tie'
-				)
-
-
-def _check_geometry(config: dict, camera_ids: set[str]) -> None:
-	"""Validates every zone and line against the camera list.
-
-	Args:
-		config: The parsed cameras.yml.
-		camera_ids: Every declared camera id.
-
-	Raises:
-		ConfigError: A zone or line names an unknown camera, or its
-			points are unusable.
-	"""
-	for zone_name, zone in (config.get('zones') or {}).items():
-		parts = zone if isinstance(zone, list) else (zone.get('parts') or [])
-		if not parts:
-			raise ConfigError(f'zone {zone_name}: no parts')
-		for index, part in enumerate(parts):
-			where = f'zone {zone_name}[{index}]'
-			if part.get('camera') not in camera_ids:
-				raise ConfigError(
-					f'{where}: unknown camera {part.get("camera")!r}'
-				)
-			_check_polygon(where, part.get('points'))
-	for line_name, line in (config.get('lines') or {}).items():
-		if line.get('camera') not in camera_ids:
-			raise ConfigError(
-				f'line {line_name}: unknown camera {line.get("camera")!r}'
-			)
-		for side in ('outer', 'inner'):
-			if side not in line:
-				raise ConfigError(
-					f'line {line_name}: no {side} line. Footfall needs two '
-					'parallel lines crossed in order; one line and a '
-					'jittering box produce phantom crossings.'
-				)
-			_check_points(f'line {line_name}.{side}', line[side])
+	# Loaded twice on purpose: once through the service's loader for its
+	# validation, once raw because the renderer wants the document as
+	# written rather than the parsed objects.
+	ain_config.load(path)
+	return yaml.safe_load(path.read_text())
 
 
 def link_recordings(config: dict, video_dir: pathlib.Path) -> list[str]:
@@ -272,7 +169,11 @@ def render(config: dict) -> str:
 	services = {}
 	for camera_id, camera in config['cameras'].items():
 		services[f'savant-source-{camera_id}'] = {
-			'image': 'ghcr.io/insight-platform/savant-adapters-gstreamer:latest',
+			# Pinned by digest: an adapter is one end of a versioned message
+			# format and the module is the other, so neither may float.
+			'image': (
+				'ghcr.io/insight-platform/savant-adapters-gstreamer@sha256:bc0d9fc73999ee7411183b783df53335af1bebb7161b981f0b175dfc3a3d1d47'
+			),
 			'entrypoint': '/opt/savant/adapters/gst/sources/rtsp.sh',
 			'environment': {
 				'RTSP_URI': _Quoted(f'rtsp://cameras:8554/{camera["stream"]}'),
