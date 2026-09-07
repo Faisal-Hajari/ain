@@ -290,3 +290,61 @@ def test_a_rendered_clip_is_not_kept_on_local_disk(monkeypatch, tmp_path):
 	# And no module-level directory to leak into.
 	assert not hasattr(clips, '_CACHE')
 	assert not hasattr(clips, '_prune')
+
+
+def test_boxes_are_shifted_to_the_frame_they_belong_on(monkeypatch):
+	"""The two ends of a clip are on different clocks.
+
+	A detection is stamped by the source adapter after it has pulled the
+	frame over RTSP and decoded it; the recording it is drawn onto is
+	stamped by MediaMTX's recorder. Measured, the detection runs about a
+	third of a second late, so a box keyed by its raw timestamp lands
+	where its subject WAS - invisible on somebody sitting, half a person
+	wide on anybody walking.
+
+	The sign is the whole test: shifting the wrong way doubles the error.
+	"""
+	from ain_api import clips
+
+	origin = datetime.datetime(2026, 9, 7, 20, 30, tzinfo=datetime.timezone.utc)
+	scope = queries.Window(start=origin, end=origin + datetime.timedelta(seconds=10))
+	# One detection, stamped exactly 5s into the clip.
+	stamped = (origin + datetime.timedelta(seconds=5)).isoformat()
+	monkeypatch.setattr(
+		queries, 'overlay',
+		lambda *args, **kwargs: [{'ts': stamped, 'objects': [{'track_id': 1}]}],
+	)
+	monkeypatch.setattr(clips, '_OPTIONS', settings.Settings(clip_box_lag_ms=300))
+
+	keyed = clips._boxes_by_offset(None, '03', scope)
+	# It is drawn EARLIER in the clip than its timestamp says, because the
+	# timestamp is late.
+	assert list(keyed) == [4700], keyed
+
+
+def test_the_lag_can_be_turned_off(monkeypatch):
+	"""It is a calibration, so zero has to mean "trust the timestamps"."""
+	from ain_api import clips
+
+	origin = datetime.datetime(2026, 9, 7, 20, 30, tzinfo=datetime.timezone.utc)
+	scope = queries.Window(start=origin, end=origin + datetime.timedelta(seconds=10))
+	stamped = (origin + datetime.timedelta(seconds=5)).isoformat()
+	monkeypatch.setattr(
+		queries, 'overlay',
+		lambda *args, **kwargs: [{'ts': stamped, 'objects': [{'track_id': 1}]}],
+	)
+	monkeypatch.setattr(clips, '_OPTIONS', settings.Settings(clip_box_lag_ms=0))
+
+	assert list(clips._boxes_by_offset(None, '03', scope)) == [5000]
+
+
+def test_a_drawing_change_does_not_serve_the_old_clip():
+	"""Clips are cached in the bucket under their event id.
+
+	Without a version in the key, fixing the drawing returns the copy the
+	previous version rendered and the fix looks like it did nothing.
+	"""
+	from ain_api import clips
+
+	assert clips._RENDER_VERSION >= 2
+	assert f'v{clips._RENDER_VERSION}' in f'evt.v{clips._RENDER_VERSION}.mp4'

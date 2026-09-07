@@ -118,6 +118,22 @@ class Settings(pydantic_settings.BaseSettings):
 	# that is running the transcodes and the GPU pipeline. Two at a time
 	# keeps a burst of alert clicks from starving the thing the clips are of.
 	clip_concurrency: int = pydantic.Field(2, alias='AIN_CLIP_CONCURRENCY')
+	# How far a detection's timestamp runs BEHIND the recorded frame it
+	# describes. Two clocks meet in a clip and neither is wrong: a detection
+	# is stamped by the Savant adapter, which reads the stream over RTSP and
+	# stamps it after decoding, while MediaMTX's recording index is stamped
+	# by the recorder. Measured, the recording runs ~1s later than the same
+	# content in the HLS playlist and the detections ~1.5s later, which
+	# leaves the boxes about a third of a second behind the video.
+	#
+	# At walking pace that is 30-60px, which is the difference between a box
+	# on somebody and a box trailing them. Re-measure by cross-correlating
+	# drawn boxes against frame-differenced motion - four windows gave +250,
+	# +250, +450 and (on a noisier sample) +750 ms.
+	#
+	# A calibration, not a constant of nature: it will move if the adapters,
+	# the transcode or the recorder are reconfigured.
+	clip_box_lag_ms: int = pydantic.Field(300, alias='AIN_CLIP_BOX_LAG_MS')
 
 	# ------------------------------------------------------- object store -
 	s3_endpoint: str = pydantic.Field('http://minio:9000', alias='AIN_S3_ENDPOINT')

@@ -51,6 +51,13 @@ _RENDERS = threading.Semaphore(_OPTIONS.clip_concurrency)
 _ID = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 
 
+# Bumped whenever the drawing changes. Clips are kept in the bucket under
+# their event id, so without this a re-render returns the copy made by the
+# previous version of this code and the fix appears not to have worked. Old
+# objects need no cleanup: the bucket's lifecycle rule expires them.
+_RENDER_VERSION = 2
+
+
 class ClipError(Exception):
 	"""There is no video for the window asked for."""
 
@@ -155,13 +162,24 @@ def _boxes_by_offset(
 	Returns:
 		Objects keyed by milliseconds since the clip started, so a frame
 		can find the nearest set without searching.
+
+	The key is shifted by `clip_box_lag_ms`, because the two ends of this
+	function are on different clocks. A detection is stamped by the source
+	adapter after it has pulled the frame over RTSP and decoded it; the
+	recording this is drawn onto is stamped by MediaMTX's recorder. Treating
+	them as one clock drew every box where its subject had been a third of a
+	second earlier - invisible on somebody sitting down, and half a person
+	wide on anybody walking.
 	"""
 	frames = queries.overlay(client, camera, scope)
 	origin = scope.start
+	lag = _OPTIONS.clip_box_lag_ms
 	grouped: dict[int, list[dict]] = {}
 	for frame in frames:
 		moment = datetime.datetime.fromisoformat(frame['ts'])
-		offset = round((moment - origin).total_seconds() * 1000)
+		# Minus the lag: a detection stamped `lag` after the moment it
+		# describes belongs on the frame `lag` earlier in the clip.
+		offset = round((moment - origin).total_seconds() * 1000) - lag
 		grouped[offset] = frame['objects']
 	return grouped
 
@@ -325,7 +343,7 @@ def render(
 	"""
 	if not _ID.match(event_id):
 		raise ClipError(f'not an event id: {event_id!r}')
-	key = f'{event_id}.mp4'
+	key = f'{event_id}.v{_RENDER_VERSION}.mp4'
 	if objects.exists(key):
 		return objects.link(key)
 
