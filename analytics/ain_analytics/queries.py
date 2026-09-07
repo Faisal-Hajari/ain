@@ -207,10 +207,45 @@ def occupancy(
 			# last of a window are usually partial, and a summary that
 			# averaged them alongside full ones would weight a one-second
 			# sliver like five minutes.
-			'covered_seconds': int(covered),
+			'covered_seconds': _covered(bucket, covered, window, interval),
 		}
 		for bucket, mean, peak, covered in rows
 	]
+
+
+def _covered(
+	bucket: datetime.datetime,
+	reported: float,
+	window: Window,
+	interval: int,
+) -> int:
+	"""How many seconds of the window one bucket actually spans.
+
+	Args:
+		bucket: The bucket's start.
+		reported: What the query said, which is 0 for a filled bucket.
+		window: The range being reported on.
+		interval: The bucket size, in seconds.
+
+	Returns:
+		The seconds covered, always at least one.
+
+	WITH FILL synthesises the buckets nobody was seen in, and a
+	synthesised row carries the DEFAULT for every column that is not the
+	one being filled - so its coverage arrives as 0. Left at that, an
+	empty stretch weighs nothing in any average taken over these
+	buckets, which is the same bug `covered_seconds` exists to prevent,
+	reappearing in exactly the buckets where "nobody was here" is the
+	interesting fact. So a filled bucket's coverage is worked out here
+	instead, from the clock.
+	"""
+	if reported > 0:
+		return int(reported)
+	if bucket.tzinfo is None:
+		bucket = bucket.replace(tzinfo=datetime.timezone.utc)
+	start = max(bucket, window.start)
+	end = min(bucket + datetime.timedelta(seconds=interval), window.end)
+	return max(1, int((end - start).total_seconds()))
 
 
 def current_occupancy(

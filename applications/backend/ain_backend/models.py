@@ -291,6 +291,10 @@ class NamedGeometry(Model):
 
 	name: str
 	kind: Literal['polygon', 'line']
+	# How many people the zone holds, when it declares one. Carried
+	# because it is what a "passed 90%" alert is 90% OF - a reader who
+	# wants to check that arithmetic should not need a second lookup.
+	capacity: int | None = None
 	parts: list[GeometryPart]
 
 

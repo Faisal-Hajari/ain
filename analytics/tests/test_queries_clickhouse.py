@@ -11,6 +11,7 @@ Skipped when there is no server, so `uv run pytest` still passes anywhere:
     CLICKHOUSE_HOST=localhost uv run --all-extras pytest -q
 """
 
+import dataclasses
 import datetime
 import os
 import uuid
@@ -47,6 +48,11 @@ _LINE = config.Line(
 	outer=((0.4, 0.0), (0.4, 1.0)),
 	inner=((0.6, 0.0), (0.6, 1.0)),
 )
+
+
+def _iso(moment: datetime.datetime) -> str:
+	"""The same ISO form the queries emit, for comparing against."""
+	return moment.isoformat(timespec='milliseconds')
 
 
 def _seconds(offset: float) -> int:
@@ -331,4 +337,167 @@ def test_a_breach_shorter_than_the_duration_raises_nothing(
 			threshold=1, window=_WINDOW, for_seconds=600, kind='congestion',
 		)
 		== []
+	)
+
+
+# The right half of the frame, so a second zone can be filled independently
+# of `_ZONE` and stand in for the queue.
+_RIGHT = config.Zone(
+	name='right',
+	capacity=10,
+	parts=(
+		config.Part(
+			camera='03',
+			points=((0.5, 0.5), (1.0, 0.5), (1.0, 1.0), (0.5, 1.0)),
+		),
+	),
+)
+
+
+@pytest.fixture(name='two_zones')
+def two_zones_fixture(monkeypatch):
+	"""A config with a capacity on one zone and none on the other."""
+	monkeypatch.setattr(
+		config, 'get',
+		lambda: config.Config(
+			cameras={'03': {'stream': 'cam3'}},
+			zones={
+				'left': dataclasses.replace(_ZONE, capacity=10),
+				'right': _RIGHT,
+				'uncapped': _ZONE,
+			},
+			lines={'door': _LINE},
+			kafka_brokers='', kafka_topic='',
+		),
+	)
+
+
+def _crowd(zone_x: float, count: int, seconds: range) -> list[tuple]:
+	"""`count` people standing in one half of the frame, second by second."""
+	return [
+		(float(second), 100 + person, zone_x + person * 0.01, 0.7)
+		for second in seconds
+		for person in range(count)
+	]
+
+
+def test_a_capacity_threshold_is_a_share_of_the_zones_own_capacity(
+	client, two_zones
+):
+	# Capacity 10, so 0.6 is six people. Five in the room is not a breach
+	# and seven is - which is what "passed 60%" has to mean, or the card's
+	# copy and its number are two different claims.
+	_insert(client, _crowd(0.1, 5, range(0, 60)) + _crowd(0.1, 7, range(60, 180)))
+	found = events.evaluate(
+		client, metric='occupancy', target='left', comparator='above',
+		threshold=0.6, window=_WINDOW, for_seconds=60, basis='capacity',
+	)
+	assert len(found) == 1
+	assert found[0].detail['threshold_value'] == 6.0
+	assert found[0].peak_value == pytest.approx(7, abs=0.01)
+
+
+def test_a_capacity_threshold_needs_a_capacity(client, two_zones):
+	# Better a 400 than a guessed capacity: an invented denominator puts a
+	# made-up number behind an alert and nothing downstream can tell.
+	with pytest.raises(config.NoCapacityError):
+		events.evaluate(
+			client, metric='occupancy', target='uncapped',
+			comparator='above', threshold=0.9, window=_WINDOW,
+			basis='capacity',
+		)
+
+
+def test_a_mean_threshold_is_a_share_of_the_windows_own_average(
+	client, two_zones
+):
+	# Four people for the first half of the window, none for the second.
+	# The time-weighted mean over the whole window is 2, so "below 0.5 of
+	# average" is below 1 - which the empty stretch is and the busy one is
+	# not.
+	_insert(client, _crowd(0.1, 4, range(0, 1800)))
+	found = events.evaluate(
+		client, metric='occupancy', target='left', comparator='below',
+		threshold=0.5, window=_WINDOW, for_seconds=600, basis='mean',
+		kind='empty',
+	)
+	assert len(found) == 1
+	assert found[0].detail['threshold_value'] == pytest.approx(1.0, abs=0.05)
+	# It starts when the room emptied, not when the window did.
+	assert found[0].start > _iso(_START)
+
+
+def test_congestion_needs_the_queue_to_be_growing(client, two_zones):
+	# The room is over capacity throughout. The queue drains across it, so
+	# this is a rush that is clearing - the one thing congestion is not.
+	rows = _crowd(0.1, 8, range(0, 300))
+	rows += _crowd(0.6, 4, range(0, 100))
+	rows += _crowd(0.6, 1, range(100, 300))
+	_insert(client, rows)
+
+	without = events.evaluate(
+		client, metric='occupancy', target='left', comparator='above',
+		threshold=0.6, window=_WINDOW, for_seconds=60, basis='capacity',
+	)
+	assert len(without) == 1, 'the room was full'
+
+	with_queue = events.evaluate(
+		client, metric='occupancy', target='left', comparator='above',
+		threshold=0.6, window=_WINDOW, for_seconds=60, basis='capacity',
+		rising='right', kind='congestion',
+	)
+	assert with_queue == [], 'a draining queue is not congestion'
+
+
+def test_congestion_fires_when_the_queue_is_growing(client, two_zones):
+	rows = _crowd(0.1, 8, range(0, 300))
+	rows += _crowd(0.6, 1, range(0, 100))
+	rows += _crowd(0.6, 5, range(100, 300))
+	_insert(client, rows)
+
+	found = events.evaluate(
+		client, metric='occupancy', target='left', comparator='above',
+		threshold=0.6, window=_WINDOW, for_seconds=60, basis='capacity',
+		rising='right', kind='congestion',
+	)
+	assert len(found) == 1
+	assert found[0].type == 'congestion'
+	assert found[0].detail['rising'] == 'right'
+	# The shape carries what the percentage was a percentage of, so a
+	# reader can check the arithmetic without a second lookup.
+	assert found[0].geometry['capacity'] == 10
+
+
+def test_an_unknown_basis_is_an_error(client, two_zones):
+	with pytest.raises(events.UnknownBasisError):
+		events.evaluate(
+			client, metric='occupancy', target='left', comparator='above',
+			threshold=1, window=_WINDOW, basis='vibes',
+		)
+
+
+def test_an_empty_stretch_counts_toward_the_average(client):
+	"""The buckets nobody appears in are the point of the average.
+
+	WITH FILL synthesises them, and a synthesised row carries the default
+	for every column but the one being filled - so their coverage arrives
+	as 0. Weighted by that, an empty hour weighs nothing, and "average
+	occupancy" becomes "average occupancy while somebody was there".
+	"""
+	# Four people for the first half of the window, nobody for the second.
+	_insert(
+		client,
+		[
+			(float(second), 100 + person, 0.1 + person * 0.01, 0.7)
+			for second in range(0, 1800)
+			for person in range(4)
+		],
+	)
+	buckets = queries.occupancy(client, _ZONE, _WINDOW, 60)
+	assert len(buckets) == 60
+	assert all(bucket['covered_seconds'] == 60 for bucket in buckets)
+	# 4 people for half an hour over a full hour is a mean of 2, not 4.
+	total = sum(b['mean'] * b['covered_seconds'] for b in buckets)
+	assert total / sum(b['covered_seconds'] for b in buckets) == pytest.approx(
+		2.0, abs=0.05
 	)

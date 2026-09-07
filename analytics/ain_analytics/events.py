@@ -36,6 +36,18 @@ METRICS = SERIES_METRICS + VISIT_METRICS
 
 COMPARATORS = ('above', 'below')
 
+# What a threshold is a threshold OF. `absolute` is a number of people;
+# `capacity` is a share of what the zone holds, so "passed 90%" means
+# something; `mean` is a share of the window's own average, so "below
+# average" means something. All three go through the same run-finding, which
+# is the point - a named event and a custom rule must not disagree about
+# where a breach starts.
+BASES = ('absolute', 'capacity', 'mean')
+
+
+class UnknownBasisError(KeyError):
+	"""No threshold basis carries the requested name."""
+
 
 class UnknownMetricError(KeyError):
 	"""No metric carries the requested name."""
@@ -123,6 +135,91 @@ def _runs(
 		yield start, len(buckets) - 1, peak
 
 
+def _weighted_mean(buckets: list[dict], key: str) -> float:
+	"""Averages a series by how long each bucket covers.
+
+	Args:
+		buckets: The series, in time order.
+		key: Which field carries the measurement.
+
+	Returns:
+		The time-weighted mean. The first and last buckets of a window
+		are usually partial, and a plain average would weigh a
+		one-second sliver like a full interval.
+	"""
+	covered = sum(bucket.get('covered_seconds', 1) for bucket in buckets)
+	if not covered:
+		return 0.0
+	total = sum(
+		float(bucket[key]) * bucket.get('covered_seconds', 1)
+		for bucket in buckets
+	)
+	return total / covered
+
+
+def _resolve(
+	threshold: float,
+	basis: str,
+	zone: 'config.Zone | None',
+	buckets: list[dict],
+	key: str,
+) -> float:
+	"""Turns a threshold and its basis into a number of people.
+
+	Args:
+		threshold: The number as the caller wrote it - people for
+			`absolute`, a fraction for the other two.
+		basis: One of `BASES`.
+		zone: The area, for a capacity basis.
+		buckets: The series, for a mean basis.
+		key: Which field of a bucket carries the measurement.
+
+	Returns:
+		The threshold the comparator is applied against.
+
+	Raises:
+		UnknownBasisError: The basis is not one of `BASES`.
+		config.NoCapacityError: A capacity basis on something without one.
+	"""
+	if basis == 'absolute':
+		return threshold
+	if basis == 'capacity':
+		if zone is None:
+			raise config.NoCapacityError('a counting line has no capacity')
+		return zone.proportion(threshold)
+	if basis == 'mean':
+		return _weighted_mean(buckets, key) * threshold
+	raise UnknownBasisError(basis)
+
+
+def _is_rising(buckets: list[dict], key: str, first: int, last: int) -> bool:
+	"""Reports whether a series grew across a run of buckets.
+
+	Args:
+		buckets: The series, in time order.
+		key: Which field carries the measurement.
+		first: Index of the run's first bucket.
+		last: Index of its last, inclusive.
+
+	Returns:
+		Whether the second half of the run averaged higher than the
+		first. Halves rather than endpoints: one bucket at each end is
+		two samples of a noisy signal, and "growing" should not turn on
+		which second somebody happened to step out of frame.
+
+		A run too short to have two halves is not rising. Nothing can be
+		called growing from one sample, and saying so is better than
+		guessing.
+	"""
+	span = buckets[first : last + 1]
+	if len(span) < 2:
+		return False
+	middle = len(span) // 2
+	return _weighted_mean(span[middle:], key) > _weighted_mean(
+		span[:middle], key
+	)
+
+
 def _event_id(kind: str, *parts: object) -> str:
 	"""Builds an id that is stable across repeats of the same query.
 
@@ -151,6 +248,8 @@ def _series_events(
 	kind: str,
 	interval: int | None,
 	tz: str,
+	basis: str,
+	rising: str | None,
 ) -> list[Event]:
 	"""Evaluates a bucketed metric against a sustained threshold.
 
@@ -169,16 +268,24 @@ def _series_events(
 			on hourly buckets or an hour's number is compared to half a
 			minute's.
 		tz: An IANA timezone name, for whole-day bucket alignment.
+		basis: What the threshold is a threshold OF - one of `BASES`.
+		rising: A zone that must be growing across the run for it to
+			count. This is what turns a full room into congestion: a
+			room at capacity with a shrinking queue is a rush that is
+			clearing, and alerting on it is alerting on good news.
 
 	Returns:
 		One event per sustained run.
 
 	Raises:
-		config.UnknownZoneError: The target names nothing.
+		config.UnknownZoneError: The target, or `rising`, names nothing.
+		config.NoCapacityError: A capacity basis on a zone without one.
+		UnknownBasisError: The basis is not one of `BASES`.
 	"""
 	settings = config.get()
 	requested = interval or _EVENT_INTERVAL
 	interval = max(requested, queries.bucket_seconds(window, requested))
+	zone = None
 	if metric == 'occupancy':
 		zone = settings.zone(target)
 		buckets = queries.occupancy(client, zone, window, interval, tz)
@@ -189,8 +296,23 @@ def _series_events(
 		key = 'in'
 		cameras, geometry = (line.camera,), line.geometry()
 
+	# Resolved once, from the same buckets the runs are found in, so a
+	# `mean` basis is the mean of exactly the window being reported on.
+	limit = _resolve(threshold, basis, zone, buckets, key)
+	# Same window, same interval, so the two series are index-aligned - both
+	# are zero-filled across the whole range.
+	trend = (
+		queries.occupancy(
+			client, settings.zone(rising), window, interval, tz
+		)
+		if rising
+		else None
+	)
+
 	events = []
-	for first, last, peak in _runs(buckets, key, comparator, threshold):
+	for first, last, peak in _runs(buckets, key, comparator, limit):
+		if trend is not None and not _is_rising(trend, 'mean', first, last):
+			continue
 		started = buckets[first]['ts']
 		# The run covers buckets `first` through `last` inclusive, so it
 		# ends one interval after the last bucket started - clamped to the
@@ -201,7 +323,9 @@ def _series_events(
 			continue
 		events.append(
 			Event(
-				id=_event_id(kind, metric, target, comparator, threshold, started),
+				id=_event_id(
+					kind, metric, target, comparator, threshold, basis, started
+				),
 				type=kind,
 				metric=metric,
 				target=target,
@@ -212,8 +336,14 @@ def _series_events(
 				geometry=geometry,
 				detail={
 					'comparator': comparator,
+					# What the caller asked for, and what it worked out
+					# to. A card reading "passed 90%" needs the first;
+					# somebody asking why it fired needs the second.
 					'threshold': threshold,
+					'threshold_of': basis,
+					'threshold_value': round(limit, 2),
 					'for_seconds': for_seconds,
+					'rising': rising,
 					'unit': 'people',
 				},
 			)
@@ -294,6 +424,8 @@ def evaluate(
 	kind: str = 'threshold',
 	interval: int | None = None,
 	tz: str = 'UTC',
+	basis: str = 'absolute',
+	rising: str | None = None,
 ) -> list[Event]:
 	"""Runs one alert rule over one window.
 
@@ -311,18 +443,26 @@ def evaluate(
 		interval: Bucket size for a series metric, or None for the
 			default. Ignored by a visit metric.
 		tz: An IANA timezone name, for whole-day bucket alignment.
+		basis: What the threshold is a threshold OF - one of `BASES`.
+			Ignored by a visit metric, whose threshold is always seconds.
+		rising: A zone that must be growing across a series run for it
+			to count. Ignored by a visit metric.
 
 	Returns:
 		The occurrences, oldest first.
 
 	Raises:
 		UnknownMetricError: The metric is not one this evaluates.
+		UnknownBasisError: The basis is not one of `BASES`.
 		config.UnknownZoneError: The target names nothing.
+		config.NoCapacityError: A capacity basis on a zone without one.
 	"""
+	if basis not in BASES:
+		raise UnknownBasisError(basis)
 	if metric in SERIES_METRICS:
 		return _series_events(
 			client, metric, target, comparator, threshold, for_seconds,
-			window, kind, interval, tz,
+			window, kind, interval, tz, basis, rising,
 		)
 	if metric in VISIT_METRICS:
 		return _visit_events(client, target, comparator, threshold, window, kind)

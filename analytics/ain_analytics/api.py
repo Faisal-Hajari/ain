@@ -389,6 +389,8 @@ def read_events(
 	type: str = 'threshold',
 	interval: int | None = None,
 	tz: str = 'UTC',
+	threshold_of: str = 'absolute',
+	rising: str | None = None,
 ) -> dict:
 	"""Evaluates one alert rule over one window.
 
@@ -406,13 +408,22 @@ def read_events(
 			threshold is authored in the units its metric is read in, so
 			a rate like footfall needs the interval it was authored for.
 		tz: An IANA timezone name, for whole-day bucket alignment.
+		threshold_of: What the threshold is a threshold OF.
+			`absolute` is a number of people; `capacity` makes it a
+			share of what the zone holds, so 0.9 is "passed 90%";
+			`mean` makes it a share of the window's own average, so
+			1.0 is "below average". A visit metric ignores it.
+		rising: A zone that must be growing across the run for it to
+			count. A room at capacity with a shrinking queue is a rush
+			that is clearing, not congestion.
 
 	Returns:
 		The occurrences, each carrying the geometry it was raised on so
 		the renderer needs no second lookup.
 
 	Raises:
-		fastapi.HTTPException: The metric or the target is unknown.
+		fastapi.HTTPException: The metric, the target or the basis is
+			unknown, or the basis needs a capacity the zone has not got.
 	"""
 	try:
 		found = events_module.evaluate(
@@ -426,6 +437,8 @@ def read_events(
 			kind=type,
 			interval=interval,
 			tz=tz,
+			basis=threshold_of,
+			rising=rising,
 		)
 	except events_module.UnknownMetricError as error:
 		raise fastapi.HTTPException(
@@ -433,6 +446,25 @@ def read_events(
 			detail=(
 				f'unknown metric: {metric}. Known: '
 				f'{list(events_module.METRICS)}'
+			),
+		) from error
+	except events_module.UnknownBasisError as error:
+		raise fastapi.HTTPException(
+			status_code=400,
+			detail=(
+				f'unknown threshold_of: {threshold_of}. Known: '
+				f'{list(events_module.BASES)}'
+			),
+		) from error
+	except config.NoCapacityError as error:
+		# Not a 404 and not a guess: the zone exists, and a percentage of
+		# a capacity nobody declared has no value. Inventing one would put
+		# a made-up number behind an alert.
+		raise fastapi.HTTPException(
+			status_code=400,
+			detail=(
+				f'zone {error.args[0]} declares no capacity, so a '
+				'threshold cannot be a share of one'
 			),
 		) from error
 	except config.UnknownZoneError as error:
@@ -450,29 +482,66 @@ def read_events(
 @app.get('/events/congestion')
 def read_congestion(
 	scope: Window,
-	n: float = 12,
+	n: float = 0.9,
 	m: float = 2,
 	zone: str = 'indoor',
+	queue: str | None = 'queue',
 	tz: str = 'UTC',
 ) -> dict:
-	"""Times occupancy stayed above `n` people for `m` minutes."""
+	"""Times the zone was over `n` of capacity for `m` minutes, queue rising.
+
+	Args:
+		scope: The time range.
+		n: The share of the zone's capacity, so 0.9 is "passed 90%".
+		m: How long it has to hold, in minutes.
+		zone: The area that filled up.
+		queue: The area that must be growing at the same time. Pass an
+			empty value to drop that condition and alert on a full room
+			alone.
+		tz: An IANA timezone name.
+
+	Returns:
+		The occurrences.
+
+	A room at capacity with a shrinking queue is a rush that is
+	clearing. Congestion is a full room that is still filling, which is
+	why this is two conditions and not one.
+	"""
 	return read_events(
 		scope, 'occupancy', zone, 'above', n, int(m * 60), 'congestion',
-		tz=tz,
+		tz=tz, threshold_of='capacity', rising=queue or None,
 	)
 
 
 @app.get('/events/empty')
 def read_empty(
 	scope: Window,
-	n: float = 1,
+	n: float = 0.5,
 	m: float = 10,
 	zone: str = 'indoor',
 	tz: str = 'UTC',
 ) -> dict:
-	"""Times occupancy stayed below `n` people for `m` minutes."""
+	"""Times the zone stayed below `n` of its own average for `m` minutes.
+
+	Args:
+		scope: The time range.
+		n: The share of the window's mean occupancy, so 0.5 is "half the
+			usual".
+		m: How long it has to hold, in minutes.
+		zone: The area that emptied out.
+		tz: An IANA timezone name.
+
+	Returns:
+		The occurrences.
+
+	Against the window's own average rather than a fixed headcount,
+	because "quiet" is a different number at 3pm and at midnight, and a
+	branch that is busier than this one should not need a different
+	config to get the same alert.
+	"""
 	return read_events(
-		scope, 'occupancy', zone, 'below', n, int(m * 60), 'empty', tz=tz
+		scope, 'occupancy', zone, 'below', n, int(m * 60), 'empty',
+		tz=tz, threshold_of='mean',
 	)
 
 

@@ -181,7 +181,10 @@ def _check_geometry(config: dict, camera_ids: set[str]) -> None:
 		ConfigError: A zone or line names an unknown camera, or its
 			points are unusable.
 	"""
-	for zone_name, parts in (config.get('zones') or {}).items():
+	for zone_name, zone in (config.get('zones') or {}).items():
+		parts = zone if isinstance(zone, list) else (zone.get('parts') or [])
+		if not parts:
+			raise ConfigError(f'zone {zone_name}: no parts')
 		for index, part in enumerate(parts):
 			where = f'zone {zone_name}[{index}]'
 			if part.get('camera') not in camera_ids:

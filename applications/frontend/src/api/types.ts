@@ -279,6 +279,8 @@ export interface GeometryPart {
 export interface NamedGeometry {
   name: string
   kind: 'polygon' | 'line'
+  /** How many people the zone holds. What a "passed 90%" alert is 90% of. */
+  capacity?: number
   parts: GeometryPart[]
 }
 

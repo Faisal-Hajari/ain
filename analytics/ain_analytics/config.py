@@ -62,12 +62,20 @@ class Part:
 		)
 
 
+class NoCapacityError(KeyError):
+	"""A zone was asked for a proportion of a capacity it does not declare."""
+
+
 @dataclasses.dataclass(frozen=True)
 class Zone:
 	"""A named area, spread over one or more cameras."""
 
 	name: str
 	parts: tuple[Part, ...]
+	# How many people the space holds. A judgement about the room, not a
+	# measurement - it is what "occupancy passed 90%" is 90% of. None for a
+	# zone where the question is meaningless, like the tables.
+	capacity: int | None = None
 
 	@property
 	def cameras(self) -> tuple[str, ...]:
@@ -109,10 +117,29 @@ class Zone:
 			branches.append(f"{part.contains_sql}, '{label}'")
 		return f'multiIf({", ".join(branches)}, \'\')'
 
+	def proportion(self, fraction: float) -> float:
+		"""Turns "90% full" into a number of people.
+
+		Args:
+			fraction: The share of capacity, 0.9 for ninety percent.
+
+		Returns:
+			The threshold in people.
+
+		Raises:
+			NoCapacityError: This zone declares no capacity, so there is
+				nothing for a percentage to be a percentage of. Guessing
+				one would put a made-up number behind an alert.
+		"""
+		if self.capacity is None:
+			raise NoCapacityError(self.name)
+		return self.capacity * fraction
+
 	def geometry(self) -> dict:
 		"""The shape to draw for an event raised on this zone."""
 		return {
 			'kind': 'polygon',
+			'capacity': self.capacity,
 			'parts': [
 				{
 					'camera': part.camera,
@@ -250,7 +277,22 @@ def load(path: pathlib.Path | None = None) -> Config:
 		raise ConfigError(f'{path}: no cameras')
 
 	zones = {}
-	for name, raw_parts in (document.get('zones') or {}).items():
+	for name, raw_zone in (document.get('zones') or {}).items():
+		# A zone is `{capacity?, parts: [...]}`. A bare list is the older
+		# shape and still reads, because a zone without a capacity is a
+		# perfectly good zone - it just cannot be alerted on proportionally.
+		if isinstance(raw_zone, list):
+			raw_parts, capacity = raw_zone, None
+		else:
+			raw_parts = raw_zone.get('parts') or []
+			capacity = raw_zone.get('capacity')
+		if capacity is not None and (
+			not isinstance(capacity, int) or capacity <= 0
+		):
+			raise ConfigError(
+				f'zone {name}: capacity {capacity!r} is not a positive '
+				'number of people'
+			)
 		parts = []
 		for index, raw in enumerate(raw_parts):
 			where = f'zone {name}[{index}]'
@@ -263,7 +305,11 @@ def load(path: pathlib.Path | None = None) -> Config:
 			parts.append(
 				Part(camera=camera, points=points, name=raw.get('name', ''))
 			)
-		zones[name] = Zone(name=name, parts=tuple(parts))
+		if not parts:
+			raise ConfigError(f'zone {name}: no parts')
+		zones[name] = Zone(
+			name=name, parts=tuple(parts), capacity=capacity
+		)
 
 	lines = {}
 	for name, raw in (document.get('lines') or {}).items():

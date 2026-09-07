@@ -159,6 +159,27 @@ The clip is the one place boxes are drawn server-side. A browser overlay is a
 rendering, not a file: an mp4 saved from the instance log and opened in a player
 has to carry its own annotation.
 
+### Thresholds that mean what the card says
+
+An alert threshold is not always a headcount. `congestion-count` says
+*"occupancy passed 90%"* and `empty-restaurant-count` says *"traffic stayed
+below average"* — neither is a fixed number, and computing them as one makes
+the card's copy and the card's number two different claims.
+
+So a threshold carries what it is a threshold **of**: a number of people, a
+share of the zone's declared capacity, or a share of the window's own mean.
+All three go through the same run-finding as a custom rule does, because a
+named event and a hand-built rule disagreeing about where a breach starts is
+the failure this design exists to avoid.
+
+Congestion is two conditions, not one: the room over capacity **and** the
+queue still growing. A full room with a shrinking queue is a rush that is
+clearing, and alerting on it is alerting on good news.
+
+Capacity is configuration and lives beside the polygon it belongs to, in
+`analytics/cameras.yml`. A zone that declares none cannot be alerted on
+proportionally, and asking is a `400` rather than a guessed denominator.
+
 ### Unavailable values
 
 A value the system cannot produce is a dash, never a zero. The PPE counts are

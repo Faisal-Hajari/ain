@@ -273,7 +273,14 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		source=Source(
 			kind=SourceKind.EVENTS,
 			route='/congestion',
-			params=(('zone', 'indoor'), ('n', '8'), ('m', '2')),
+			# 90% of the indoor zone's capacity, held for two minutes,
+			# with the queue still growing - which is what the card says
+			# it counts. The capacity itself is in cameras.yml, beside
+			# the polygon it belongs to.
+			params=(
+				('zone', 'indoor'), ('queue', 'queue'),
+				('n', '0.9'), ('m', '2'),
+			),
 		),
 	),
 	ElementSpec(
@@ -289,7 +296,12 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		source=Source(
 			kind=SourceKind.EVENTS,
 			route='/empty',
-			params=(('zone', 'indoor'), ('n', '1'), ('m', '10')),
+			# Below half the window's OWN average, for ten minutes.
+			# Against the average rather than a headcount because quiet
+			# is a different number at 3pm and at midnight, and because
+			# a busier branch should not need its own config to get the
+			# same alert.
+			params=(('zone', 'indoor'), ('n', '0.5'), ('m', '10')),
 		),
 	),
 	ElementSpec(

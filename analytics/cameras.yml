@@ -48,27 +48,40 @@ cameras:
 # re-identification, so anybody standing where two parts overlap is counted
 # twice - which is why each part is drawn to own a disjoint patch of floor.
 # `indoor` and `outdoor` between them are what live-occupancy splits.
+# A zone is a capacity and a list of parts. The parts are summed - with no
+# cross-camera re-identification, anybody standing where two overlap is
+# counted twice, which is why they are drawn to own disjoint patches of floor.
+#
+# `capacity` is how many people the space holds, and it is a judgement about
+# the room rather than a measurement: it is what "occupancy passed 90%" is
+# 90% OF. Set against what the cameras have actually seen - indoor peaked at
+# 14 overnight - so that the congestion alert fires on a genuinely full room
+# and not on a busy one. A zone with no capacity cannot be alerted on
+# proportionally, and asking for it is an error rather than a guess.
 zones:
   indoor:
-    # The lobby's wooden floor, stopping at the door frame: past it is tile,
-    # and past the tile is the street, which is camera 06's.
-    - camera: '03'
-      points: [[0.00, 0.62], [0.22, 0.45], [0.52, 0.42], [0.74, 0.62],
-               [0.74, 1.00], [0.00, 1.00]]
-    # The seating corridor. Portrait frame, so the walkable strip is tall.
-    - camera: '04'
-      points: [[0.28, 0.28], [0.90, 0.18], [0.95, 0.60], [0.60, 1.00],
-               [0.12, 1.00]]
-    # The floor in front of the service counter, minus the queue strip below,
-    # is the same patch - so the counter area belongs to `queue` alone and
-    # `indoor` does not claim it.
+    capacity: 18
+    parts:
+      # The lobby's wooden floor, stopping at the door frame: past it is tile,
+      # and past the tile is the street, which is camera 06's.
+      - camera: '03'
+        points: [[0.00, 0.62], [0.22, 0.45], [0.52, 0.42], [0.74, 0.62],
+                 [0.74, 1.00], [0.00, 1.00]]
+      # The seating corridor. Portrait frame, so the walkable strip is tall.
+      - camera: '04'
+        points: [[0.28, 0.28], [0.90, 0.18], [0.95, 0.60], [0.60, 1.00],
+                 [0.12, 1.00]]
+      # The floor in front of the service counter is the queue's, not this
+      # zone's: one patch of floor belongs to one zone.
 
-  # 09 and 10 also look at parking, and their parts are gone with them. A
+  # 09 and 10 also looked at parking, and their parts are gone with them. A
   # zone is the sum of its parts, so `outdoor` now means what camera 06 can
   # see - the street frontage and the bays in front of it.
   outdoor:
-    - camera: '06'
-      points: [[0.02, 0.32], [0.98, 0.24], [0.98, 1.00], [0.02, 1.00]]
+    capacity: 12
+    parts:
+      - camera: '06'
+        points: [[0.02, 0.32], [0.98, 0.24], [0.98, 1.00], [0.02, 1.00]]
 
   # Where customers actually stand to order. Camera 11 looks at the register
   # from behind the counter and sees only staff, so the queue is camera 12's
@@ -77,27 +90,33 @@ zones:
   # observed standing at (0.18, 0.33), (0.34, 0.60) and (0.72, 0.93) at
   # different points in the recording, and all three are inside this.
   queue:
-    - camera: '12'
-      points: [[0.10, 0.20], [0.98, 0.66], [0.98, 1.00], [0.55, 1.00],
-               [0.03, 0.52]]
+    capacity: 6
+    parts:
+      - camera: '12'
+        points: [[0.10, 0.20], [0.98, 0.66], [0.98, 1.00], [0.55, 1.00],
+                 [0.03, 0.52]]
 
   kitchen:
-    - camera: '05'
-      points: [[0.03, 0.45], [0.50, 0.28], [0.80, 0.20], [0.98, 0.35],
-               [0.98, 1.00], [0.03, 1.00]]
+    capacity: 8
+    parts:
+      - camera: '05'
+        points: [[0.03, 0.45], [0.50, 0.28], [0.80, 0.20], [0.98, 0.35],
+                 [0.98, 1.00], [0.03, 1.00]]
 
   # Named parts: dwell is reported per table, so each part carries a name and
-  # the histogram is grouped by it.
+  # the histogram is grouped by it. No capacity - "90% of the tables zone" is
+  # not a thing anybody means.
   tables:
-    - camera: '04'
-      name: table-1
-      points: [[0.33, 0.55], [0.60, 0.55], [0.62, 0.90], [0.35, 0.90]]
-    - camera: '04'
-      name: table-2
-      points: [[0.52, 0.33], [0.70, 0.33], [0.72, 0.52], [0.54, 0.52]]
-    - camera: '04'
-      name: table-3
-      points: [[0.66, 0.13], [0.80, 0.13], [0.82, 0.30], [0.68, 0.30]]
+    parts:
+      - camera: '04'
+        name: table-1
+        points: [[0.33, 0.55], [0.60, 0.55], [0.62, 0.90], [0.35, 0.90]]
+      - camera: '04'
+        name: table-2
+        points: [[0.52, 0.33], [0.70, 0.33], [0.72, 0.52], [0.54, 0.52]]
+      - camera: '04'
+        name: table-3
+        points: [[0.66, 0.13], [0.80, 0.13], [0.82, 0.30], [0.68, 0.30]]
 
 # Two parallel lines, not one. A single line and a jittering bounding box
 # produce phantom crossings all day; requiring both to be crossed, in order,
