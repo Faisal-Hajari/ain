@@ -159,6 +159,12 @@ The clip is the one place boxes are drawn server-side. A browser overlay is a
 rendering, not a file: an mp4 saved from the instance log and opened in a player
 has to carry its own annotation.
 
+`clipUrl` is **absent** when there is no video for that occurrence. Recording is
+a rolling window, so an alert outlives its footage; a link that answers `404`
+tells the reader nothing and a missing one tells them exactly what happened. An
+occurrence whose window is only partly recorded gets a clip of the part that
+survives rather than nothing at all.
+
 ### Thresholds that mean what the card says
 
 An alert threshold is not always a headcount. `congestion-count` says

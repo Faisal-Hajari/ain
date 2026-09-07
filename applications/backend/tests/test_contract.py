@@ -567,14 +567,32 @@ def test_a_multi_day_instance_log_labels_the_day(monkeypatch):
 			},
 		],
 	}
+	# Camera 03 has video from the 6th, so the older event has none.
+	cameras = {
+		'cameras': [
+			{
+				'id': '03', 'stream': 'cam3', 'live': True,
+				'recorded_from': '2026-09-06T00:00:00+00:00',
+			}
+		]
+	}
 	monkeypatch.setattr(live.analytics, 'configured', lambda: True)
-	monkeypatch.setattr(live.analytics, 'get', lambda path, params: body)
+	monkeypatch.setattr(
+		live.analytics,
+		'get',
+		lambda path, params: cameras if path == '/cameras' else body,
+	)
 
 	log = payloads.build_instance_log(
 		'congestion-count', '', i18n.Locale.EN, '7d'
 	)
 	assert [entry.id for entry in log.instances] == ['cong-2', 'cong-1']
 	assert all('-' in entry.timestamp for entry in log.instances)
+	# Recording is a rolling window: the event inside it gets a link, the
+	# one that predates it gets none rather than a button that 404s.
+	by_id = {entry.id: entry for entry in log.instances}
+	assert by_id['cong-2'].clip_url is not None
+	assert by_id['cong-1'].clip_url is None
 
 	today = payloads.build_instance_log(
 		'congestion-count', '', i18n.Locale.EN, 'today'

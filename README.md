@@ -75,10 +75,13 @@ install while TensorRT builds its engine. To build that engine ahead of time:
 docker compose run --rm --no-deps savant-module --build-engines /opt/savant/module.yml
 ```
 
-Roughly 5 GB of disk for the images, plus whatever MediaMTX's 15-minute
-recording window costs (~2 GB across the five watched cameras), plus
-ClickHouse. Budget about three CPU cores for the transcodes and a couple of
-GB of VRAM.
+Roughly 5 GB of disk for the images, plus MediaMTX's two-hour recording
+window (~10 GB across the five watched cameras), plus ClickHouse. Budget
+about three CPU cores for the transcodes and a couple of GB of VRAM.
+
+That two hours is what alert clips are cut from, so it is also how far back
+a "Watch clip" button works. An occurrence older than it says **no video
+kept** rather than offering a link that 404s.
 
 ## Tests
 

@@ -483,6 +483,10 @@ def instances(context) -> models.InstanceLog | None:
 	# Sorted on the instant, then labelled - not sorted on the label. Over
 	# a week's window "09:15" appears seven times and sorting the strings
 	# interleaves the days.
+	# Recording is a rolling window, so an event can outlive its video. A
+	# row with no clip is honest; a "Watch clip" button that answers 404 is
+	# not, and a reader cannot tell which kind of nothing they got.
+	horizon = recording_horizon()
 	entries = []
 	for event in sorted(body['events'], key=lambda e: e['start'], reverse=True):
 		camera = (event.get('cameras') or ['03'])[0]
@@ -498,7 +502,7 @@ def instances(context) -> models.InstanceLog | None:
 				camera=f'{i18n.CAMERA.get(context.locale)} {camera}',
 				detail=context.text(spec.description),
 				severity=_event_severity(event),
-				clip_url=_clip_url(event, camera),
+				clip_url=_clip_url(event, camera, horizon),
 			)
 		)
 	return models.InstanceLog(
@@ -529,12 +533,51 @@ def _event_severity(event: dict) -> models.Severity:
 	return models.Severity.CRITICAL if ratio >= 1.5 else models.Severity.WARN
 
 
-def _clip_url(event: dict, camera: str) -> str:
-	"""Points at the video for exactly the window that raised an event."""
+def _clip_url(
+	event: dict, camera: str, horizon: dict[str, datetime.datetime]
+) -> str | None:
+	"""Points at the video for the window that raised an event.
+
+	Args:
+		event: One event from the analytics service.
+		camera: Which camera to cut from.
+		horizon: The oldest instant each camera still has video for.
+
+	Returns:
+		The URL, or None when the event ended before anything that is
+		still recorded. An absent link renders as no button at all, which
+		is the truthful rendering of "there is no video for this"; a
+		button that answers 404 is not.
+	"""
+	oldest = horizon.get(camera)
+	if oldest is None or _moment(event['end']) <= oldest:
+		return None
 	query = urllib.parse.urlencode(
 		{'camera': camera, 'start': event['start'], 'end': event['end']}
 	)
 	return f'/api/clips/{event["id"]}.mp4?{query}'
+
+
+def recording_horizon() -> dict[str, datetime.datetime]:
+	"""The oldest instant each camera still has video for.
+
+	Returns:
+		One entry per camera that has any recording. Empty when there is
+		no analytics service, or when nothing is recorded - in which
+		case no clip is offered for anything, which is correct: there is
+		none to offer.
+	"""
+	if not analytics.configured():
+		return {}
+	body = analytics.get('/cameras', {})
+	if body is None:
+		return {}
+	horizon = {}
+	for entry in body.get('cameras') or []:
+		oldest = entry.get('recorded_from')
+		if oldest:
+			horizon[entry['id']] = datetime.datetime.fromisoformat(oldest)
+	return horizon
 
 
 def feed_status() -> dict[str, bool] | None:

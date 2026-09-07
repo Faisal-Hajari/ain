@@ -54,13 +54,17 @@ cameras:
 #
 # `capacity` is how many people the space holds, and it is a judgement about
 # the room rather than a measurement: it is what "occupancy passed 90%" is
-# 90% OF. Set against what the cameras have actually seen - indoor peaked at
-# 14 overnight - so that the congestion alert fires on a genuinely full room
-# and not on a busy one. A zone with no capacity cannot be alerted on
-# proportionally, and asking for it is an error rather than a guess.
+# 90% OF. A zone with no capacity cannot be alerted on proportionally, and
+# asking for it is an error rather than a guess.
+#
+# Calibrated against what the cameras have actually seen. Indoor peaked at 14
+# over ten hours, and the frames at that peak show a lobby with people
+# standing between the bench and the door - so 14 IS full, and 18 was a
+# guess that would have made the congestion alert unreachable. The number to
+# change when the furniture does.
 zones:
   indoor:
-    capacity: 18
+    capacity: 14
     parts:
       # The lobby's wooden floor, stopping at the door frame: past it is tile,
       # and past the tile is the street, which is camera 06's.

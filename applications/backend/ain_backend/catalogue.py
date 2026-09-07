@@ -317,7 +317,13 @@ ELEMENTS: tuple[ElementSpec, ...] = (
 		source=Source(
 			kind=SourceKind.EVENTS,
 			route='/long-wait',
-			params=(('zone', 'queue'), ('m', '5')),
+			# Two minutes, not five. The card's copy leaves X to us, and X
+			# has to be calibrated to the counter it watches: over ten
+			# hours of this one the median wait was three seconds and the
+			# longest was four minutes, so a five-minute threshold cannot
+			# fire at all. Two fires nine times a night, which is what an
+			# alert is for.
+			params=(('zone', 'queue'), ('m', '2')),
 		),
 	),
 	ElementSpec(

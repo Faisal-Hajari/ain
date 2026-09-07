@@ -54,13 +54,15 @@ moq: false
 # Recording is what the clip endpoint reads: an alert names a time range,
 # and the playback server cuts it out of these segments. It records the
 # re-encoded H.264 that the browser already plays, so a clip needs no
-# second transcode, and it keeps a short window because ten cameras of
-# re-encoded 720p come to roughly 15 GB an hour between them.
+# second transcode. Two hours of it: long enough that every event the
+# dashboard shows for the current shift has video behind it, short enough to
+# stay a few gigabytes. Anything older than this has no clip, and the
+# instance log stops offering one rather than handing out a dead link.
 record: yes
 recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f
 recordFormat: fmp4
 recordSegmentDuration: 1m
-recordDeleteAfter: 15m
+recordDeleteAfter: 2h
 playback: yes
 playbackAddress: :9996
 
@@ -94,6 +96,13 @@ paths:
   # about three times the work for no extra information. -g 15 then puts a
   # keyframe every second, which is what lets HLS cut one-second segments.
   #
+  # The bitrate cap is what makes clips possible. `ultrafast` with no rate
+  # control spends about 5.5 Mbit/s a camera, and MediaMTX records this same
+  # stream - 12.6 GB an hour across five cameras, which is why the recording
+  # window had to be fifteen minutes, which is why every event older than
+  # that had no clip behind it. Capped, it is a quarter of that, and a
+  # working day of video fits on a disk.
+  #
   # -rtsp_transport tcp on the way in is not optional: over UDP this hop drops
   # packets even on loopback, and a dropped RTP packet is a dropped frame.
   #
@@ -106,6 +115,7 @@ paths:
       ffmpeg -hide_banner -loglevel error -stream_loop -1 -re
       -i /videos/$MTX_PATH.mp4 -an -c:v libx264 -preset ultrafast
       -tune zerolatency -fps_mode cfr -r 15 -g 15
+      -crf 28 -maxrate 2500k -bufsize 5000k
       -f rtsp -rtsp_transport tcp
       rtsp://localhost:$RTSP_PORT/$MTX_PATH
     runOnDemandRestart: yes

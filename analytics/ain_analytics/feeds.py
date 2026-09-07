@@ -16,6 +16,7 @@ camera nothing is watching, and it reports as having no signal, which is
 exactly what a viewer needs to know.
 """
 
+import datetime
 import logging
 import os
 
@@ -26,6 +27,7 @@ from ain_analytics import config
 _LOG = logging.getLogger(__name__)
 
 _MEDIAMTX = os.environ.get('AIN_MEDIAMTX_URL', 'http://cameras:9997')
+_PLAYBACK = os.environ.get('AIN_PLAYBACK_URL', 'http://cameras:9996')
 _TIMEOUT = float(os.environ.get('AIN_MEDIAMTX_TIMEOUT', '3'))
 
 
@@ -51,6 +53,45 @@ def ready_streams() -> set[str] | None:
 	return {item['name'] for item in items if item.get('ready')}
 
 
+def recorded(stream: str) -> list[tuple[datetime.datetime, float]]:
+	"""Lists the stretches of video MediaMTX still holds for one stream.
+
+	Args:
+		stream: The MediaMTX path, which is not the camera id.
+
+	Returns:
+		(start, seconds) per contiguous recording, oldest first, or an
+		empty list when there is none or the server cannot be asked.
+		Recording is a rolling window, so this shrinks from the front as
+		the retention passes.
+	"""
+	try:
+		response = httpx.get(
+			f'{_PLAYBACK}/list', params={'path': stream}, timeout=_TIMEOUT
+		)
+		response.raise_for_status()
+		items = response.json() or []
+	except (httpx.HTTPError, ValueError) as error:
+		_LOG.info('playback list unavailable for %s: %s', stream, error)
+		return []
+	ranges = []
+	for item in items:
+		try:
+			start = datetime.datetime.fromisoformat(
+				item['start'].replace('Z', '+00:00')
+			)
+		except (KeyError, ValueError):
+			continue
+		ranges.append((start, float(item.get('duration') or 0)))
+	return sorted(ranges)
+
+
+def recorded_from(stream: str) -> datetime.datetime | None:
+	"""The oldest instant one stream still has video for."""
+	ranges = recorded(stream)
+	return ranges[0][0] if ranges else None
+
+
 def status(settings: config.Config, ready: set[str] | None) -> list[dict]:
 	"""Reports every camera the pipeline is configured for.
 
@@ -65,12 +106,20 @@ def status(settings: config.Config, ready: set[str] | None) -> list[dict]:
 		third answer, and collapsing it into "it is down" would turn one
 		unreachable control API into ten cameras reported dead.
 	"""
-	return [
-		{
-			'id': camera_id,
-			'stream': camera.get('stream'),
-			'description': camera.get('description'),
-			'live': None if ready is None else camera.get('stream') in ready,
-		}
-		for camera_id, camera in settings.cameras.items()
-	]
+	entries = []
+	for camera_id, camera in settings.cameras.items():
+		stream = camera.get('stream')
+		oldest = recorded_from(stream) if stream else None
+		entries.append(
+			{
+				'id': camera_id,
+				'stream': stream,
+				'description': camera.get('description'),
+				'live': None if ready is None else stream in ready,
+				# The oldest instant a clip can be cut from. Recording is a
+				# rolling window, so an event older than this has no video
+				# behind it and offering one is offering a dead link.
+				'recorded_from': oldest.isoformat() if oldest else None,
+			}
+		)
+	return entries

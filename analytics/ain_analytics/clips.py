@@ -28,6 +28,7 @@ import numpy
 from clickhouse_connect.driver import client as ch_client
 
 from ain_analytics import config
+from ain_analytics import feeds
 from ain_analytics import queries
 
 _LOG = logging.getLogger(__name__)
@@ -81,6 +82,31 @@ def clip_window(
 	finish = end or start + datetime.timedelta(seconds=DEFAULT_SECONDS)
 	longest = start + datetime.timedelta(seconds=MAX_SECONDS)
 	return queries.Window(start=start, end=min(finish, longest))
+
+
+def available(stream: str, scope: queries.Window) -> queries.Window | None:
+	"""Trims a wanted range to the video that still exists.
+
+	Args:
+		stream: The MediaMTX path, which is not the camera id.
+		scope: The range the event covers.
+
+	Returns:
+		The overlap with a recording, or None when nothing overlaps.
+
+	Recording is a rolling window, so an event that ran for twenty
+	minutes may have its first ten already deleted. Asking for the whole
+	thing gets a 404 and shows the viewer nothing; asking for the half
+	that exists shows them the half that exists, which is the more
+	useful answer and the honest one.
+	"""
+	for start, seconds in feeds.recorded(stream):
+		finish = start + datetime.timedelta(seconds=seconds)
+		overlap_start = max(start, scope.start)
+		overlap_end = min(finish, scope.end)
+		if overlap_end > overlap_start:
+			return queries.Window(start=overlap_start, end=overlap_end)
+	return None
 
 
 def _fetch(stream: str, scope: queries.Window, into: pathlib.Path) -> None:
@@ -243,6 +269,11 @@ def _encode(
 		'-s', f'{width}x{height}', '-r', f'{fps:.4f}',
 		'-i', 'pipe:0',
 		'-an', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
+		# The source is already capped at 2.5 Mbit/s, and this is watched in
+		# a dialog a few hundred pixels wide. At the default CRF a
+		# two-minute clip came to 34 MB, which is a long wait for something
+		# the viewer glances at.
+		'-crf', '28', '-maxrate', '1500k', '-bufsize', '3000k',
 		# The browser has to be able to start playing before it has the
 		# whole file.
 		'-movflags', '+faststart',
@@ -309,6 +340,10 @@ def render(
 	# place at the end. Two requests for the same clip would otherwise have
 	# one serving the other's half-written file, and a render that failed
 	# would leave a broken mp4 that the size check above accepts forever.
+	# Trimmed to the video that is still there. An event older than the
+	# recording window has none, and that is a 404 with a reason rather
+	# than a broken player.
+	scope = available(stream, scope) or _missing(event_id, scope)
 	unique = f'{event_id}.{os.getpid()}.{threading.get_ident()}'
 	raw = _CACHE / f'{unique}.raw.mp4'
 	partial = _CACHE / f'{unique}.part.mp4'
@@ -324,6 +359,24 @@ def render(
 			partial.unlink(missing_ok=True)
 	_prune()
 	return target
+
+
+def _missing(event_id: str, scope: queries.Window) -> queries.Window:
+	"""Refuses a clip whose video is gone.
+
+	Args:
+		event_id: The event asked for, for the message.
+		scope: The range that has no recording.
+
+	Raises:
+		ClipError: Always. This exists so the caller can write
+			`available(...) or _missing(...)` and keep the happy path on
+			one line.
+	"""
+	raise ClipError(
+		f'no recording for {event_id} at {scope.start.isoformat()}; '
+		'it is older than the recording window'
+	)
 
 
 def _prune() -> None:
