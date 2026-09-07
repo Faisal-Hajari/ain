@@ -51,6 +51,8 @@
   button:disabled { opacity: 0.45; cursor: default; }
   button.on { border-color: var(--box); color: var(--box); }
   button.danger:hover:not(:disabled) { border-color: var(--crit); color: var(--crit); }
+  button.primary { border-color: var(--box); color: var(--box); }
+  button.primary:hover:not(:disabled) { background: var(--box); color: var(--ground); }
   :focus-visible { outline: 2px solid var(--box); outline-offset: 2px; }
 
   .stage {
@@ -116,8 +118,8 @@
     <select id="camera" aria-label="Camera"></select>
     <button id="reload" title="Take a fresh still">Refresh frame</button>
     <span class="grow"></span>
-    <button id="new-zone">+ Zone</button>
-    <button id="new-line">+ Line</button>
+    <button id="new-zone" title="An area to count people in">+ Zone</button>
+    <button id="new-entrance" title="A counting line: two parallels, crossed in order">+ Entrance</button>
     <button id="delete" class="danger" disabled>Delete</button>
   </div>
 
@@ -132,8 +134,10 @@
     <b>Click</b> to add a point · <b>drag</b> a point to move it ·
     <b>Enter</b> or <b>double-click</b> to finish · <b>Backspace</b> removes the last point ·
     <b>Esc</b> deselects.
-    <b>+ Line</b> draws a pair: two ends of the outer line, then the inner one
-    a little further in. Crossing outer then inner is somebody coming in.
+    On a selected zone, the hollow dots between corners are <b>new points</b> -
+    click one to add a corner there; <b>right-click</b> a corner removes it.
+    <b>+ Entrance</b> draws a pair: two ends of the outer line, then the inner
+    one a little further in. Crossing outer then inner is somebody coming in.
   </p>
 </main>
 
@@ -165,6 +169,7 @@
     <textarea id="yaml" readonly spellcheck="false"></textarea>
     <div class="status" id="status">Pick a camera to begin.</div>
     <div class="editor" style="border-top:0">
+      <button id="save" class="primary">Save to cameras.yml</button>
       <button id="copy">Copy YAML</button>
     </div>
   </div>
@@ -209,6 +214,9 @@ async function boot() {
     ]);
     state.cameras = cams.cameras;
     state.all = zones;
+    // What the file looked like when this page read it. Handed back on save
+    // so a second tab - or a hand edit - cannot be silently overwritten.
+    state.version = zones.version;
     const select = $("camera");
     select.innerHTML = "";
     for (const cam of state.cameras) {
@@ -316,6 +324,17 @@ function draw() {
     ctx.setLineDash([]);
 
     if (chosen) {
+      // Hollow dots between the corners: click one and it becomes a corner.
+      // Drawn rather than revealed on hover, because a control nobody can
+      // see is a control nobody uses - the pair-of-lines rule was already
+      // one of those.
+      for (const [x, y] of midpoints(shape)) {
+        ctx.beginPath();
+        ctx.arc(x * w, y * h, HANDLE * unit * 0.45, 0, Math.PI * 2);
+        ctx.lineWidth = unit;
+        ctx.strokeStyle = colour;
+        ctx.stroke();
+      }
       points.forEach(([x, y]) => {
         ctx.beginPath();
         ctx.arc(x * w, y * h, HANDLE * unit * 0.6, 0, Math.PI * 2);
@@ -348,6 +367,33 @@ function at(event) {
 
 const clamp = (v) => Math.min(1, Math.max(0, Math.round(v * 10000) / 10000));
 
+/**
+ * The midpoint of every edge of a closed polygon, where a corner can be added.
+ *
+ * Lines are exempt: a counting line is a segment, and a third point on it is
+ * not a shape cameras.yml can hold.
+ */
+function midpoints(shape) {
+  if (shape.kind !== "polygon" || shape.points.length < 3) return [];
+  return shape.points.map((point, i) => {
+    const next = shape.points[(i + 1) % shape.points.length];
+    return [(point[0] + next[0]) / 2, (point[1] + next[1]) / 2];
+  });
+}
+
+/** The edge whose midpoint dot is under the pointer, if the selection has one. */
+function midpointAt(point) {
+  if (state.selected < 0 || state.drawing !== null) return null;
+  const rect = canvas.getBoundingClientRect();
+  const dots = midpoints(state.shapes[state.selected]);
+  for (let i = 0; i < dots.length; i++) {
+    const dx = (dots[i][0] - point[0]) * rect.width;
+    const dy = (dots[i][1] - point[1]) * rect.height;
+    if (Math.hypot(dx, dy) <= HIT) return i;
+  }
+  return null;
+}
+
 /** The handle under the pointer, if the selected shape has one there. */
 function handleAt(point) {
   if (state.selected < 0) return null;
@@ -373,12 +419,27 @@ canvas.addEventListener("pointerdown", (event) => {
     return renderAll();
   }
 
+  // A real corner wins over a midpoint dot: they sit HIT apart at most on
+  // a short edge, and moving a corner is the commoner intent.
   const handle = handleAt(point);
   if (handle !== null) {
     state.dragging = { shape: state.selected, point: handle };
     $("frame").classList.add("dragging");
     canvas.setPointerCapture(event.pointerId);
     return;
+  }
+
+  const edge = midpointAt(point);
+  if (edge !== null) {
+    const shape = state.shapes[state.selected];
+    shape.points.splice(edge + 1, 0, point);
+    shape.existing = false;
+    // Straight into a drag, so the new corner lands where it is wanted
+    // rather than on the edge it was cut from.
+    state.dragging = { shape: state.selected, point: edge + 1 };
+    $("frame").classList.add("dragging");
+    canvas.setPointerCapture(event.pointerId);
+    return renderAll();
   }
 
   // Selecting by clicking inside a polygon, or near a line.
@@ -395,8 +456,24 @@ canvas.addEventListener("pointermove", (event) => {
   writeYaml();
 });
 
+canvas.addEventListener("contextmenu", (event) => {
+  const handle = handleAt(at(event));
+  if (handle === null) return;
+  event.preventDefault();
+  const shape = state.shapes[state.selected];
+  const floor = shape.kind === "line" ? 2 : 3;
+  if (shape.points.length <= floor) {
+    return say("A " + (shape.kind === "line" ? "counting line is two points"
+      : "polygon needs three corners") + ".", "err");
+  }
+  shape.points.splice(handle, 1);
+  shape.existing = false;
+  renderAll();
+});
+
 canvas.addEventListener("pointerup", () => {
   if (!state.dragging) return;
+  state.shapes[state.dragging.shape].existing = false;
   state.dragging = null;
   $("frame").classList.remove("dragging");
   renderAll();
@@ -653,26 +730,106 @@ for (const [id, key] of [["name", "name"], ["part", "part"]]) {
   $(id).addEventListener("input", (event) => {
     if (state.selected < 0) return;
     state.shapes[state.selected][key] = event.target.value.trim();
+    state.shapes[state.selected].existing = false;
     draw(); renderList(); writeYaml();
   });
 }
 $("side").addEventListener("change", (event) => {
   if (state.selected < 0) return;
   state.shapes[state.selected].part = event.target.value;
+  state.shapes[state.selected].existing = false;
   draw(); renderList(); writeYaml();
 });
 $("capacity").addEventListener("input", (event) => {
   if (state.selected < 0) return;
   const value = parseInt(event.target.value, 10);
   state.shapes[state.selected].capacity = Number.isFinite(value) && value > 0 ? value : null;
-  writeYaml();
+  state.shapes[state.selected].existing = false;
+  renderList(); writeYaml();
 });
 
 $("camera").addEventListener("change", (event) => void pick(event.target.value));
-$("reload").addEventListener("click", () => void loadFrame(true));
+$("reload").addEventListener("click", async () => {
+  // Re-reads the geometry as well as the picture: this is what a stale-save
+  // refusal points at, so it has to actually clear the staleness.
+  state.all = await fetch("zones").then((r) => r.json());
+  state.version = state.all.version;
+  state.shapes = shapesFor(state.camera);
+  state.selected = -1;
+  state.drawing = null;
+  await loadFrame(true);
+  renderAll();
+});
 $("new-zone").addEventListener("click", () => begin("polygon"));
-$("new-line").addEventListener("click", () => begin("line", newLineName()));
+$("new-entrance").addEventListener("click", () => begin("line", newLineName()));
 $("delete").addEventListener("click", remove);
+/**
+ * Writes this camera's shapes back to cameras.yml.
+ *
+ * Everything the camera has is sent, not a diff, so deleting a shape here
+ * deletes it there. The server replaces only this camera's geometry and
+ * parses the result before it writes, so a refusal leaves the file as it
+ * was and says which shape was the problem.
+ */
+$("save").addEventListener("click", async () => {
+  const button = $("save");
+  const ready = state.shapes.filter(
+    (shape) => shape.points.length >= (shape.kind === "line" ? 2 : 3),
+  );
+  const unfinished = state.shapes.length - ready.length;
+  const nameless = ready.filter((shape) => !shape.name.trim());
+  if (nameless.length) {
+    return say("Name every shape before saving: " + nameless.length +
+      " has no name yet.", "err");
+  }
+
+  button.disabled = true;
+  say("Saving…");
+  try {
+    const response = await fetch("zones", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        camera: state.camera,
+        version: state.version,
+        shapes: ready.map((shape) => ({
+          kind: shape.kind,
+          name: shape.name.trim(),
+          part: shape.part || "",
+          capacity: shape.capacity,
+          points: shape.points,
+        })),
+      }),
+    });
+    const body = await response.json();
+    if (response.status === 409) {
+      return say((body.detail || "cameras.yml changed.") +
+        " Nothing was written - press Refresh frame to reload it.", "err");
+    }
+    if (!response.ok) {
+      return say(body.detail || ("Save refused (" + response.status + ")."), "err");
+    }
+    // Re-read rather than assume: what is on the canvas after a save should
+    // be what is in the file, including anything the server normalised.
+    state.all = await fetch("zones").then((r) => r.json());
+    state.version = state.all.version;
+    state.shapes = shapesFor(state.camera);
+    state.selected = -1;
+    state.drawing = null;
+    renderAll();
+    const wrote = [
+      body.zones.length + " zone" + (body.zones.length === 1 ? "" : "s"),
+      body.lines.length + " entrance" + (body.lines.length === 1 ? "" : "s"),
+    ].join(" and ");
+    say("Saved " + wrote + " on camera " + state.camera + "." +
+      (unfinished ? " " + unfinished + " unfinished shape left out." : ""), "ok");
+  } catch (error) {
+    say("Could not save: " + error.message, "err");
+  } finally {
+    button.disabled = false;
+  }
+});
+
 $("copy").addEventListener("click", async () => {
   try {
     await navigator.clipboard.writeText($("yaml").value);

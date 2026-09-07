@@ -235,3 +235,60 @@ def test_a_counting_line_the_editor_drew_loads_as_a_pair(tmp_path):
 	# read its own output back and know which is which.
 	parts = {part['name'] for part in line.geometry()['parts']}
 	assert parts == {'outer', 'inner'}
+
+
+def _contains(points, x: float, y: float) -> bool:
+	"""Ray cast, matching what ClickHouse's pointInPolygon will decide."""
+	hit = False
+	for i in range(len(points)):
+		(xi, yi), (xj, yj) = points[i], points[i - 1]
+		if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+			hit = not hit
+	return hit
+
+
+def test_no_zone_overlaps_itself(settings):
+	"""A zone is the sum of its parts, so two parts sharing floor double-count.
+
+	There is no cross-camera re-identification, and within one camera there is
+	no deduplication either - the SQL adds the parts up. Sampled on a grid
+	rather than reasoned about, because the polygons are traced by hand over a
+	still and "these look disjoint" is exactly the judgement that slips.
+	"""
+	for name, zone in settings.zones.items():
+		for i, first in enumerate(zone.parts):
+			for second in zone.parts[i + 1 :]:
+				if first.camera != second.camera:
+					continue
+				both = [
+					(x / 200, y / 200)
+					for x in range(200)
+					for y in range(200)
+					if _contains(first.points, x / 200, y / 200)
+					and _contains(second.points, x / 200, y / 200)
+				]
+				assert not both, (
+					f'{name}: {first.name or first.camera} and '
+					f'{second.name or second.camera} share floor at {both[:3]}'
+				)
+
+
+def test_the_tables_are_floor_patches_not_tabletops(settings):
+	"""What the zone test looks at is the foot point, not the box centre.
+
+	A polygon traced around a white tabletop catches nobody: the customer's
+	feet are beside and under the table. These two points are where the two
+	people visible in camera 04's frame actually have their feet, read off
+	the still - if a redraw stops containing them it has traced the furniture
+	again.
+	"""
+	tables = settings.zone('tables')
+	seats = {'table-1': (515 / 1280, 1400 / 1440), 'table-2': (787 / 1280, 770 / 1440)}
+	for part_name, (x, y) in seats.items():
+		part = next(p for p in tables.parts if p.name == part_name)
+		assert _contains(part.points, x, y), f'{part_name} misses its seated customer'
+
+	# And the walkway is nobody's table, or crossing to the door reads as
+	# sitting down to eat.
+	for x, y in ((800 / 1280, 1300 / 1440), (760 / 1280, 1000 / 1440)):
+		assert not any(_contains(p.points, x, y) for p in tables.parts)

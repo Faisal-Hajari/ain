@@ -307,11 +307,19 @@ services:
       - AIN_CLIP_DIR=/clips
       # Where the editor cuts its still frames from.
       - AIN_RTSP_URL=rtsp://cameras:8554
+    # The editor's Save writes cameras.yml, and this container runs as `ain`
+    # (uid 10002) against a file owned by the host user. The file is mode 664,
+    # so joining its group is enough - and is a much smaller grant than
+    # running the API as root or as the host uid. Override AIN_CONFIG_GID if
+    # `stat -c %g analytics/cameras.yml` is not 1000 on your machine.
+    group_add:
+      - "${AIN_CONFIG_GID:-1000}"
     volumes:
-      # Live, so a zone edit is a container restart rather than a rebuild -
-      # and never a GPU restart, which is the whole reason no geometry is in
-      # module.yml.
-      - ./analytics/cameras.yml:/app/cameras.yml:ro
+      # Writable, and live: a zone edit is a save in the browser, and at worst
+      # a container restart - never a GPU restart, which is the whole reason
+      # no geometry is in module.yml. Written in place rather than renamed
+      # into position, because renaming onto a bind-mounted FILE is EBUSY.
+      - ./analytics/cameras.yml:/app/cameras.yml
       # Bind-mounted like the config it edits, so tweaking the editor is a
       # container restart rather than an image rebuild.
       - ./analytics/editor.html:/app/editor.html:ro

@@ -22,6 +22,7 @@ api = [
     # Clips are drawn on the CPU. headless: no GUI libraries in the image.
     "opencv-python-headless>=4.10",
     "numpy>=1.26",
+    "ruamel-yaml>=0.18",
 ]
 ingest = [
     "confluent-kafka>=2.2.0",

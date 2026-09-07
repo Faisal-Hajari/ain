@@ -19,11 +19,13 @@ bucket that is empty for no reason a reader can see.
 """
 
 import datetime
+import logging
 import os
 import pathlib
 from typing import Annotated, Literal
 
 import fastapi
+import pydantic
 from fastapi.middleware import cors
 
 from ain_analytics import clips
@@ -42,6 +44,8 @@ from ain_analytics import queries
 # one showing three dashes. When the model lands, `status` flips to `ok` and
 # nothing else about the shape changes.
 _PPE_KINDS = ('no-gloves', 'no-hair-cover', 'no-mask')
+
+_LOG = logging.getLogger(__name__)
 
 app = fastapi.FastAPI(
 	title='AIN analytics API',
@@ -309,6 +313,7 @@ def read_zones() -> dict:
 	"""
 	settings = config.get()
 	return {
+		'version': config.version(),
 		'zones': [
 			{'name': name, **zone.geometry()}
 			for name, zone in settings.zones.items()
@@ -318,6 +323,69 @@ def read_zones() -> dict:
 			for name, line in settings.lines.items()
 		],
 	}
+
+
+class DrawnShape(pydantic.BaseModel):
+	"""One shape the editor drew, in the editor's own vocabulary."""
+
+	kind: Literal['polygon', 'line']
+	name: str
+	# For a zone part this is an optional label like `table-3`; for a line it
+	# is which half of the pair it is, `outer` or `inner`.
+	part: str = ''
+	capacity: int | None = None
+	points: list[tuple[float, float]]
+
+
+class DrawnCamera(pydantic.BaseModel):
+	"""Everything one camera contributes, which is what a save replaces."""
+
+	camera: str
+	shapes: list[DrawnShape]
+	# What `GET /zones` reported when the page loaded. Optional so curl stays
+	# usable, checked whenever it is sent.
+	version: str | None = None
+
+
+@app.put('/zones')
+def write_zones(body: DrawnCamera) -> dict:
+	"""Writes one camera's zones and lines back to cameras.yml.
+
+	The editor sends everything that camera has, not a diff, so a shape
+	deleted on the canvas is deleted here. Other cameras are untouched, as
+	are the comments - the file is the geometry's documentation and losing
+	it a line at a time to a UI would be worse than not having the UI.
+
+	`cameras` is deliberately not writable. Adding one also means
+	regenerating docker-compose.analytics.yml and starting a source adapter,
+	which is a command, not a click.
+
+	Args:
+		body: The camera and its shapes.
+
+	Returns:
+		The zone and line names that camera now contributes to.
+
+	Raises:
+		HTTPException: 400 if the result would not load, or 409 if the file
+			changed since the page read it. Nothing is written in either
+			case - the file is parsed before it is replaced.
+	"""
+	try:
+		written = config.save(
+			body.camera,
+			[shape.model_dump() for shape in body.shapes],
+			expect=body.version,
+		)
+	except config.StaleWriteError as error:
+		raise fastapi.HTTPException(status_code=409, detail=str(error)) from error
+	except config.ConfigError as error:
+		raise fastapi.HTTPException(status_code=400, detail=str(error)) from error
+	_LOG.info(
+		'cameras.yml: camera %s now has zones %s and lines %s',
+		body.camera, written['zones'], written['lines'],
+	)
+	return written
 
 
 @app.get('/occupancy')
