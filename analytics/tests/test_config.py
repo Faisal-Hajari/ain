@@ -210,3 +210,28 @@ def test_what_the_editor_writes_is_what_the_loader_reads(tmp_path):
 	assert settings.line('entrance').outer == ((0.73, 0.40), (1.00, 0.83))
 	# And the geometry it produces is usable, not merely parseable.
 	assert 'pointInPolygon' in settings.zone('waiting').contains_sql
+
+
+def test_a_counting_line_the_editor_drew_loads_as_a_pair(tmp_path):
+	"""Pins the editor's line output, which is the fiddliest thing it emits.
+
+	A counting line is two parallels crossed in order, and the editor
+	writes them by which half each one is rather than by the order they
+	were drawn - so this asserts the halves survive, not just the shape.
+	"""
+	path = _write(
+		tmp_path,
+		"cameras:\n  '04': {stream: cam4}\n"
+		'lines:\n'
+		'  entrance:\n'
+		"    camera: '04'\n"
+		'    outer: [[0.25, 0.41], [0.80, 0.61]]\n'
+		'    inner: [[0.25, 0.51], [0.80, 0.71]]\n',
+	)
+	line = config.load(path).line('entrance')
+	assert line.outer == ((0.25, 0.41), (0.80, 0.61))
+	assert line.inner == ((0.25, 0.51), (0.80, 0.71))
+	# And the drawn shape names both halves, which is what lets the editor
+	# read its own output back and know which is which.
+	parts = {part['name'] for part in line.geometry()['parts']}
+	assert parts == {'outer', 'inner'}

@@ -131,7 +131,9 @@
   <p class="hint">
     <b>Click</b> to add a point · <b>drag</b> a point to move it ·
     <b>Enter</b> or <b>double-click</b> to finish · <b>Backspace</b> removes the last point ·
-    <b>Esc</b> deselects. A line takes exactly two points.
+    <b>Esc</b> deselects.
+    <b>+ Line</b> draws a pair: two ends of the outer line, then the inner one
+    a little further in. Crossing outer then inner is somebody coming in.
   </p>
 </main>
 
@@ -147,6 +149,10 @@
     <div class="row">
       <label for="part">Part</label>
       <input id="part" placeholder="table-1 (optional)" autocomplete="off">
+      <select id="side" aria-label="Which half of the counting line" hidden>
+        <option value="outer">outer (street side)</option>
+        <option value="inner">inner (inside)</option>
+      </select>
     </div>
     <div class="row">
       <label for="capacity">Capacity</label>
@@ -229,7 +235,10 @@ function shapesFor(camera) {
         out.push({
           kind: shape.kind,
           name: shape.name,
-          part: shape.kind === "line" ? "" : (part.name || ""),
+          // For a line this is 'outer' or 'inner' - which half of the pair
+          // it is. Inferring that from draw order silently reorders a
+          // config when anything is redrawn.
+          part: part.name || "",
           capacity: shape.capacity ?? null,
           points: part.points.map((p) => [p[0], p[1]]),
           existing: true,
@@ -432,11 +441,15 @@ function distanceToSegment(p, a, b, rect) {
 
 /* -------------------------------------------------------------- edits -- */
 
-function begin(kind) {
+function begin(kind, name, side) {
+  const chosen = name || (kind === "line" ? "entrance" : "zone");
   const shape = {
     kind,
-    name: kind === "line" ? "entrance" : "zone",
-    part: "",
+    name: chosen,
+    // A line is half of a pair, and which half decides direction: outer
+    // then inner is somebody coming in. Assigned rather than asked for,
+    // because the answer is always "whichever is still missing".
+    part: kind === "line" ? (side || freeSide(chosen)) : "",
     capacity: null,
     points: [],
     existing: false,
@@ -448,9 +461,31 @@ function begin(kind) {
   // just clicked instead of finishing the shape it started.
   canvas.focus();
   say(kind === "line"
-    ? "Click the two ends of the line."
+    ? "Click the two ends of the " + shape.part + " line."
     : "Click each corner. Enter or double-click to close it.");
   renderAll();
+}
+
+/** Which half of a counting line is not drawn yet. */
+function freeSide(name) {
+  return hasSide(name, "outer") ? "inner" : "outer";
+}
+
+/**
+ * A name for a new counting line that is not already a complete pair.
+ *
+ * Without this, "+ Line" on a camera that already has one drew a SECOND
+ * inner - the next free half of a line that had no free halves - and the
+ * YAML could only report the clash. A new line wants a new name.
+ */
+function newLineName() {
+  let name = "entrance";
+  let n = 1;
+  while (hasSide(name, "outer") && hasSide(name, "inner")) {
+    n += 1;
+    name = "entrance-" + n;
+  }
+  return name;
 }
 
 function finish() {
@@ -460,8 +495,28 @@ function finish() {
     return say("A " + shape.kind + " needs at least " + need + " points.", "err");
   }
   state.drawing = null;
+
+  // A single line and a jittering bounding box produce phantom crossings all
+  // day, so a counting line is only useful as a pair - and the second half
+  // is started here rather than left as an instruction somebody has to
+  // read and remember.
+  if (shape.kind === "line" && shape.part === "outer" && !hasSide(shape.name, "inner")) {
+    begin("line", shape.name, "inner");
+    return say(
+      "Outer line done. Now the inner one, a little further in: crossing " +
+        "outer then inner is somebody coming in.",
+    );
+  }
   say("Shape finished. Name it, then copy the YAML.", "ok");
   renderAll();
+}
+
+/** Whether one half of a named counting line already exists. */
+function hasSide(name, side) {
+  return state.shapes.some(
+    (s) => s.kind === "line" && s.name === name && s.part === side &&
+      s.points.length === 2,
+  );
 }
 
 function remove() {
@@ -525,15 +580,21 @@ function writeYaml() {
     for (const [name, parts] of lines) {
       out.push(lead(2) + name + ":");
       out.push(lead(4) + "camera: '" + state.camera + "'");
-      // Two parallels, crossed in order. The first drawn is the outer one:
-      // outer then inner is somebody coming in.
-      const sides = ["outer", "inner"];
-      parts.slice(0, 2).forEach((part, i) => {
-        out.push(lead(4) + sides[i] + ": " + points(part.points));
-      });
-      if (parts.length === 1) {
-        out.push(lead(4) + "# inner: draw a second line - one line and a jittering");
-        out.push(lead(4) + "# box produce phantom crossings all day.");
+      // Emitted by which half each one IS, not by the order they were
+      // drawn: taking the first two silently discarded a line the moment
+      // anything was redrawn, and the canvas still showed it.
+      for (const side of ["outer", "inner"]) {
+        const matching = parts.filter((part) => part.part === side);
+        if (matching.length === 1) {
+          out.push(lead(4) + side + ": " + points(matching[0].points));
+        } else if (matching.length === 0) {
+          out.push(lead(4) + "# " + side + ": MISSING - a counting line is two");
+          out.push(lead(4) + "# parallels crossed in order, and one line plus a");
+          out.push(lead(4) + "# jittering box is phantom crossings all day.");
+        } else {
+          out.push(lead(4) + "# " + side + ": " + matching.length + " of these");
+          out.push(lead(4) + "# are drawn. Delete all but one.");
+        }
       }
     }
   }
@@ -574,12 +635,18 @@ function renderList() {
 
 function renderFields() {
   const shape = state.shapes[state.selected];
+  const isLine = !!shape && shape.kind === "line";
   $("name").value = shape ? shape.name : "";
-  $("part").value = shape ? shape.part : "";
+  $("part").value = shape && !isLine ? shape.part : "";
   $("capacity").value = shape && shape.capacity ? shape.capacity : "";
   for (const id of ["name", "part", "capacity"]) $(id).disabled = !shape;
-  $("part").disabled = !shape || shape.kind === "line";
-  $("capacity").disabled = !shape || shape.kind === "line";
+  // A line's "part" is which half of the pair it is, and there are exactly
+  // two answers - so it is a choice, not a free-text field.
+  $("part").hidden = isLine;
+  $("side").hidden = !isLine;
+  $("side").disabled = !isLine;
+  if (isLine) $("side").value = shape.part || "outer";
+  $("capacity").disabled = !shape || isLine;
 }
 
 for (const [id, key] of [["name", "name"], ["part", "part"]]) {
@@ -589,6 +656,11 @@ for (const [id, key] of [["name", "name"], ["part", "part"]]) {
     draw(); renderList(); writeYaml();
   });
 }
+$("side").addEventListener("change", (event) => {
+  if (state.selected < 0) return;
+  state.shapes[state.selected].part = event.target.value;
+  draw(); renderList(); writeYaml();
+});
 $("capacity").addEventListener("input", (event) => {
   if (state.selected < 0) return;
   const value = parseInt(event.target.value, 10);
@@ -599,7 +671,7 @@ $("capacity").addEventListener("input", (event) => {
 $("camera").addEventListener("change", (event) => void pick(event.target.value));
 $("reload").addEventListener("click", () => void loadFrame(true));
 $("new-zone").addEventListener("click", () => begin("polygon"));
-$("new-line").addEventListener("click", () => begin("line"));
+$("new-line").addEventListener("click", () => begin("line", newLineName()));
 $("delete").addEventListener("click", remove);
 $("copy").addEventListener("click", async () => {
   try {

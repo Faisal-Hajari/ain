@@ -239,7 +239,13 @@ def read_editor() -> fastapi.Response:
 	"""
 	if not _EDITOR.is_file():
 		raise fastapi.HTTPException(status_code=404, detail='no editor bundled')
-	return fastapi.responses.FileResponse(_EDITOR, media_type='text/html')
+	return fastapi.responses.FileResponse(
+		_EDITOR,
+		media_type='text/html',
+		# The file is bind-mounted, so it changes without the image
+		# changing. Cached, an edit to it appears to do nothing at all.
+		headers={'Cache-Control': 'no-store'},
+	)
 
 
 @app.get('/frame', include_in_schema=False)
