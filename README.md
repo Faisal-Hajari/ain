@@ -62,6 +62,10 @@ and what makes it possible to move the entrance line and recompute last month.
 the compose generator, the query layer and the browser overlay, and editing it
 is a restart of `analytics-api` - never of the module.
 
+**To draw the zones rather than guess at coordinates**, open
+<http://localhost:8100/editor>: a still from each camera with the shapes it
+already has drawn over it, click to add new ones, and the YAML to paste back.
+
 ## Requirements
 
 The pipeline needs an Nvidia GPU (Turing or newer) and the

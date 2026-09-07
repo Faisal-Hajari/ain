@@ -111,3 +111,102 @@ def test_a_line_with_only_one_parallel_is_rejected(tmp_path):
 	)
 	with pytest.raises(config.ConfigError, match='phantom crossings'):
 		config.load(path)
+
+
+def test_a_zone_declares_its_capacity_beside_its_parts(tmp_path):
+	path = _write(
+		tmp_path,
+		"cameras:\n  '03': {stream: cam3}\n"
+		'zones:\n  indoor:\n    capacity: 14\n    parts:\n'
+		"      - camera: '03'\n        points: [[0,0],[1,0],[1,1]]\n",
+	)
+	zone = config.load(path).zone('indoor')
+	assert zone.capacity == 14
+	assert zone.proportion(0.9) == pytest.approx(12.6)
+
+
+def test_a_zone_without_a_capacity_refuses_a_proportion(tmp_path):
+	# An invented denominator would put a made-up number behind an alert,
+	# and nothing downstream could tell.
+	path = _write(
+		tmp_path,
+		"cameras:\n  '03': {stream: cam3}\n"
+		'zones:\n  tables:\n    parts:\n'
+		"      - camera: '03'\n        points: [[0,0],[1,0],[1,1]]\n",
+	)
+	zone = config.load(path).zone('tables')
+	assert zone.capacity is None
+	with pytest.raises(config.NoCapacityError):
+		zone.proportion(0.9)
+
+
+def test_a_capacity_that_is_not_a_headcount_is_rejected(tmp_path):
+	path = _write(
+		tmp_path,
+		"cameras:\n  '03': {stream: cam3}\n"
+		'zones:\n  indoor:\n    capacity: 0\n    parts:\n'
+		"      - camera: '03'\n        points: [[0,0],[1,0],[1,1]]\n",
+	)
+	with pytest.raises(config.ConfigError, match='positive number of people'):
+		config.load(path)
+
+
+def test_a_zone_written_as_a_bare_list_still_loads(tmp_path):
+	# The older shape, before capacity existed. A zone without one is a
+	# perfectly good zone; it just cannot be alerted on proportionally.
+	path = _write(
+		tmp_path,
+		"cameras:\n  '03': {stream: cam3}\n"
+		'zones:\n  indoor:\n'
+		"    - camera: '03'\n      points: [[0,0],[1,0],[1,1]]\n",
+	)
+	zone = config.load(path).zone('indoor')
+	assert zone.capacity is None
+	assert len(zone.parts) == 1
+
+
+def test_a_zone_with_no_parts_is_an_error(tmp_path):
+	path = _write(
+		tmp_path,
+		"cameras:\n  '03': {stream: cam3}\n"
+		'zones:\n  indoor:\n    capacity: 8\n    parts: []\n',
+	)
+	with pytest.raises(config.ConfigError, match='no parts'):
+		config.load(path)
+
+
+def test_what_the_editor_writes_is_what_the_loader_reads(tmp_path):
+	"""Pins the editor's output format to this loader.
+
+	The page emits YAML for a human to paste into cameras.yml. If the two
+	drift, the failure is a config file that looks right and does not
+	load - so the exact shape it writes is asserted here.
+	"""
+	path = _write(
+		tmp_path,
+		"cameras:\n  '03': {stream: cam3}\n"
+		'\n'
+		'zones:\n'
+		'  waiting:\n'
+		'    capacity: 6\n'
+		'    parts:\n'
+		"      - camera: '03'\n"
+		'        points: [[0.20, 0.70], [0.46, 0.66], [0.52, 0.90], [0.24, 0.94]]\n'
+		'  tables:\n'
+		'    parts:\n'
+		"      - camera: '03'\n"
+		'        name: table-1\n'
+		'        points: [[0.33, 0.55], [0.60, 0.55], [0.62, 0.90]]\n'
+		'\n'
+		'lines:\n'
+		'  entrance:\n'
+		"    camera: '03'\n"
+		'    outer: [[0.73, 0.40], [1.00, 0.83]]\n'
+		'    inner: [[0.66, 0.46], [0.93, 0.89]]\n',
+	)
+	settings = config.load(path)
+	assert settings.zone('waiting').capacity == 6
+	assert settings.zone('tables').parts[0].name == 'table-1'
+	assert settings.line('entrance').outer == ((0.73, 0.40), (1.00, 0.83))
+	# And the geometry it produces is usable, not merely parseable.
+	assert 'pointInPolygon' in settings.zone('waiting').contains_sql

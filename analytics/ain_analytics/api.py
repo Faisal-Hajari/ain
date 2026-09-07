@@ -20,6 +20,7 @@ bucket that is empty for no reason a reader can see.
 
 import datetime
 import os
+import pathlib
 from typing import Annotated, Literal
 
 import fastapi
@@ -30,6 +31,7 @@ from ain_analytics import config
 from ain_analytics import db
 from ain_analytics import events as events_module
 from ain_analytics import feeds
+from ain_analytics import frames
 from ain_analytics import queries
 
 # The PPE models are not deployed. These endpoints answer `unavailable`
@@ -55,6 +57,13 @@ app.add_middleware(
 )
 
 Comparator = Literal['above', 'below']
+
+# The geometry editor. Served from here rather than from the dashboard
+# because this is the service that owns cameras.yml - the shapes it draws
+# and the shapes it reads are the same file.
+_EDITOR = pathlib.Path(
+	os.environ.get('AIN_EDITOR_HTML', '/app/editor.html')
+)
 
 
 def _parse(moment: str | None, field: str) -> datetime.datetime | None:
@@ -214,6 +223,55 @@ def health(response: fastapi.Response) -> dict:
 		'zones': sorted(config.get().zones),
 		'lines': sorted(config.get().lines),
 	}
+
+
+@app.get('/editor', include_in_schema=False)
+def read_editor() -> fastapi.Response:
+	"""Serves the zone and line editor.
+
+	Returns:
+		A single self-contained page. It draws the shapes in cameras.yml
+		over a still from the camera they belong to, and writes the YAML
+		for whatever you draw.
+
+	Raises:
+		fastapi.HTTPException: The page is not in the image.
+	"""
+	if not _EDITOR.is_file():
+		raise fastapi.HTTPException(status_code=404, detail='no editor bundled')
+	return fastapi.responses.FileResponse(_EDITOR, media_type='text/html')
+
+
+@app.get('/frame', include_in_schema=False)
+def read_frame(camera: str) -> fastapi.Response:
+	"""Returns one still from a camera, to draw zones against.
+
+	Args:
+		camera: The camera id, as the catalogue names it.
+
+	Returns:
+		A JPEG.
+
+	Raises:
+		fastapi.HTTPException: The camera is unknown, or its stream did
+			not produce a frame.
+	"""
+	stream = config.get().stream(camera)
+	if stream is None:
+		raise fastapi.HTTPException(
+			status_code=404, detail=f'unknown camera: {camera}'
+		)
+	try:
+		image = frames.still(stream)
+	except frames.FrameError as error:
+		raise fastapi.HTTPException(status_code=503, detail=str(error)) from error
+	return fastapi.Response(
+		content=image,
+		media_type='image/jpeg',
+		# Briefly, so a reload gets a fresh moment without re-opening RTSP
+		# on every repaint.
+		headers={'Cache-Control': 'max-age=5'},
+	)
 
 
 @app.get('/cameras')

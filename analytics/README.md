@@ -36,9 +36,18 @@ interpolation once, at init, so geometry in `module.yml` would cost a GPU
 restart per zone edit - and would make it impossible to move the entrance line
 and recompute last month's footfall against it.
 
-To see a zone on the video while tuning it, open the Cameras tab and turn on
-the **Zones** toggle: the same polygons this file declares are drawn over the
-live tiles.
+To draw one rather than guess at coordinates, open the editor:
+
+    http://localhost:8100/editor
+
+It takes a still from the camera, draws the shapes this file already declares
+over it, and lets you click new ones. It writes the YAML; you paste it here
+and restart `analytics-api`. It deliberately does not save: `cameras.yml` is
+checked in, and a config file that edits itself behind your back is a config
+file you cannot review.
+
+To see a zone over moving video instead, open the dashboard's Cameras tab and
+turn on the **Zones** toggle - the same polygons, drawn on the live tiles.
 
 ## Tests
 

@@ -48,6 +48,9 @@ RUN mkdir -p /clips && chown ain:ain /clips
 COPY --from=api-builder --chown=ain:ain /app/.venv /app/.venv
 COPY --from=api-builder --chown=ain:ain /app/ain_analytics /app/ain_analytics
 COPY --chown=ain:ain cameras.yml /app/cameras.yml
+# The zone editor: one self-contained page, no build step and no bundler,
+# served at /editor by the service that owns the file it writes YAML for.
+COPY --chown=ain:ain editor.html /app/editor.html
 
 USER ain
 

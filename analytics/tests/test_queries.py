@@ -115,3 +115,43 @@ def test_a_real_event_id_is_accepted():
 
 	assert clips._ID.match('congestion-8f21a0b3')
 	assert clips._ID.match('long-wait-289e3682')
+
+
+def test_a_still_is_cached_so_a_repaint_does_not_reopen_rtsp(monkeypatch):
+	"""Opening an RTSP session per page load is a lot for one picture."""
+	import subprocess
+
+	from ain_analytics import frames
+
+	calls = []
+
+	def fake_run(command, **kwargs):
+		calls.append(command)
+		return subprocess.CompletedProcess(command, 0, b'\xff\xd8jpeg', b'')
+
+	monkeypatch.setattr(frames.subprocess, 'run', fake_run)
+	monkeypatch.setattr(frames, '_cache', {})
+
+	assert frames.still('cam3').startswith(b'\xff\xd8')
+	frames.still('cam3')
+	assert len(calls) == 1, 'the second read should come from the cache'
+	# A different camera is a different picture.
+	frames.still('cam4')
+	assert len(calls) == 2
+
+
+def test_a_stream_that_gives_no_frame_is_an_error(monkeypatch):
+	import subprocess
+
+	from ain_analytics import frames
+
+	monkeypatch.setattr(frames, '_cache', {})
+	monkeypatch.setattr(
+		frames.subprocess,
+		'run',
+		lambda command, **kwargs: subprocess.CompletedProcess(
+			command, 1, b'', b'Connection refused'
+		),
+	)
+	with pytest.raises(frames.FrameError, match='Connection refused'):
+		frames.still('cam3')

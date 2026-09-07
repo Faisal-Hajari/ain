@@ -287,11 +287,16 @@ services:
       - CLICKHOUSE_PASSWORD=ain
       - AIN_PLAYBACK_URL=http://cameras:9996
       - AIN_CLIP_DIR=/clips
+      # Where the editor cuts its still frames from.
+      - AIN_RTSP_URL=rtsp://cameras:8554
     volumes:
       # Live, so a zone edit is a container restart rather than a rebuild -
       # and never a GPU restart, which is the whole reason no geometry is in
       # module.yml.
       - ./analytics/cameras.yml:/app/cameras.yml:ro
+      # Bind-mounted like the config it edits, so tweaking the editor is a
+      # container restart rather than an image rebuild.
+      - ./analytics/editor.html:/app/editor.html:ro
       - clips:/clips
     depends_on:
       clickhouse:

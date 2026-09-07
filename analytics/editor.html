@@ -1,0 +1,618 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zone editor · ain</title>
+<style>
+  /* The same three colours the pipeline itself paints with, so a polygon
+     here looks like the polygon on the camera tile. */
+  :root {
+    --ground: #0b1210;
+    --panel: #111a17;
+    --panel-2: #16211d;
+    --rule: #24332c;
+    --ink: #e6efea;
+    --dim: #93a89f;
+    --faint: #63776e;
+    --zone: #60a5fa;
+    --line: #fbbf24;
+    --box: #3ddc84;
+    --crit: #e0685f;
+    --mono: ui-monospace, "SF Mono", "IBM Plex Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font: 13px/1.5 var(--mono);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 380px;
+    height: 100vh;
+  }
+  @media (max-width: 900px) { body { grid-template-columns: 1fr; height: auto; } }
+
+  /* ------------------------------------------------------------ stage -- */
+  main { display: flex; flex-direction: column; min-width: 0; }
+
+  .bar {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    padding: 10px 14px; border-bottom: 1px solid var(--rule); background: var(--panel);
+  }
+  .bar .grow { flex: 1; }
+
+  select, button, input {
+    font: inherit; color: var(--ink); background: var(--panel-2);
+    border: 1px solid var(--rule); border-radius: 3px; padding: 5px 9px;
+  }
+  button { cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--faint); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  button.on { border-color: var(--box); color: var(--box); }
+  button.danger:hover:not(:disabled) { border-color: var(--crit); color: var(--crit); }
+  :focus-visible { outline: 2px solid var(--box); outline-offset: 2px; }
+
+  .stage {
+    flex: 1; display: grid; place-items: center; padding: 14px;
+    overflow: auto; background:
+      repeating-conic-gradient(var(--panel) 0% 25%, var(--ground) 0% 50%) 50% / 18px 18px;
+  }
+  .frame { position: relative; line-height: 0; box-shadow: 0 0 0 1px var(--rule); }
+  .frame img { display: block; max-width: 100%; height: auto; }
+  .frame canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
+  .frame canvas:focus-visible { outline: 2px solid var(--box); outline-offset: -2px; }
+  .frame.dragging canvas { cursor: grabbing; }
+
+  .hint { padding: 8px 14px; border-top: 1px solid var(--rule); color: var(--faint); font-size: 11.5px; }
+  .hint b { color: var(--dim); font-weight: 500; }
+
+  /* ------------------------------------------------------------- side -- */
+  aside {
+    border-left: 1px solid var(--rule); background: var(--panel);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  @media (max-width: 900px) { aside { border-left: 0; border-top: 1px solid var(--rule); } }
+
+  aside h2 {
+    margin: 0; padding: 11px 14px; font-size: 10.5px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--faint); border-bottom: 1px solid var(--rule);
+    font-weight: 500;
+  }
+
+  .shapes { overflow-y: auto; max-height: 40vh; }
+  .shape {
+    display: grid; grid-template-columns: 10px minmax(0,1fr) auto;
+    gap: 9px; align-items: center; width: 100%; text-align: left;
+    padding: 8px 14px; background: none; border: 0; border-bottom: 1px solid var(--rule);
+    border-radius: 0; color: var(--dim); cursor: pointer;
+  }
+  .shape:hover { background: var(--panel-2); }
+  .shape[aria-current="true"] { background: var(--panel-2); color: var(--ink); }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; }
+  .shape .meta { font-size: 10.5px; color: var(--faint); }
+  .empty { padding: 14px; color: var(--faint); }
+
+  .editor { padding: 12px 14px; border-top: 1px solid var(--rule); display: grid; gap: 9px; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row label { color: var(--faint); font-size: 11px; min-width: 52px; }
+  .row input, .row select { flex: 1; min-width: 0; }
+
+  .out { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+  textarea {
+    flex: 1; min-height: 180px; resize: none; border: 0; border-top: 1px solid var(--rule);
+    background: var(--ground); color: var(--ink); font: 12px/1.55 var(--mono);
+    padding: 12px 14px; white-space: pre; overflow: auto;
+  }
+  .status { padding: 8px 14px; font-size: 11px; color: var(--faint); border-top: 1px solid var(--rule); }
+  .status.err { color: var(--crit); }
+  .status.ok { color: var(--box); }
+</style>
+</head>
+<body>
+
+<main>
+  <div class="bar">
+    <select id="camera" aria-label="Camera"></select>
+    <button id="reload" title="Take a fresh still">Refresh frame</button>
+    <span class="grow"></span>
+    <button id="new-zone">+ Zone</button>
+    <button id="new-line">+ Line</button>
+    <button id="delete" class="danger" disabled>Delete</button>
+  </div>
+
+  <div class="stage">
+    <div class="frame" id="frame">
+      <img id="shot" alt="Still frame from the selected camera">
+      <canvas id="canvas" tabindex="0" aria-label="Drawing surface"></canvas>
+    </div>
+  </div>
+
+  <p class="hint">
+    <b>Click</b> to add a point · <b>drag</b> a point to move it ·
+    <b>Enter</b> or <b>double-click</b> to finish · <b>Backspace</b> removes the last point ·
+    <b>Esc</b> deselects. A line takes exactly two points.
+  </p>
+</main>
+
+<aside>
+  <h2>Shapes on this camera</h2>
+  <div class="shapes" id="shapes"></div>
+
+  <div class="editor">
+    <div class="row">
+      <label for="name">Name</label>
+      <input id="name" placeholder="queue" autocomplete="off">
+    </div>
+    <div class="row">
+      <label for="part">Part</label>
+      <input id="part" placeholder="table-1 (optional)" autocomplete="off">
+    </div>
+    <div class="row">
+      <label for="capacity">Capacity</label>
+      <input id="capacity" type="number" min="1" step="1" placeholder="people (zones only)">
+    </div>
+  </div>
+
+  <div class="out">
+    <h2>cameras.yml</h2>
+    <textarea id="yaml" readonly spellcheck="false"></textarea>
+    <div class="status" id="status">Pick a camera to begin.</div>
+    <div class="editor" style="border-top:0">
+      <button id="copy">Copy YAML</button>
+    </div>
+  </div>
+</aside>
+
+<script>
+"use strict";
+
+// Everything is normalised 0..1 against the camera's own frame, exactly as
+// cameras.yml stores it - so what is drawn here, what the queries test
+// against and what the browser overlay paints are one coordinate space.
+const state = {
+  cameras: [],
+  camera: null,
+  shapes: [],       // {kind:'polygon'|'line', name, part, capacity, points:[[x,y]]}
+  selected: -1,
+  drawing: null,    // index of the shape being drawn, or null
+  dragging: null,   // {shape, point}
+};
+
+const $ = (id) => document.getElementById(id);
+const canvas = $("canvas");
+const ctx = canvas.getContext("2d");
+const shot = $("shot");
+
+const HANDLE = 5;
+const HIT = 10;
+
+function say(text, kind) {
+  const el = $("status");
+  el.textContent = text;
+  el.className = "status" + (kind ? " " + kind : "");
+}
+
+/* ------------------------------------------------------------ loading -- */
+
+async function boot() {
+  try {
+    const [cams, zones] = await Promise.all([
+      fetch("cameras").then((r) => r.json()),
+      fetch("zones").then((r) => r.json()),
+    ]);
+    state.cameras = cams.cameras;
+    state.all = zones;
+    const select = $("camera");
+    select.innerHTML = "";
+    for (const cam of state.cameras) {
+      const option = document.createElement("option");
+      option.value = cam.id;
+      option.textContent = cam.id + "  " + (cam.description || cam.stream);
+      select.append(option);
+    }
+    if (!state.cameras.length) return say("cameras.yml declares no cameras.", "err");
+    select.value = state.cameras[0].id;
+    await pick(state.cameras[0].id);
+  } catch (error) {
+    say("Could not reach the analytics API: " + error.message, "err");
+  }
+}
+
+/** Pulls the shapes that belong to one camera out of the /zones document. */
+function shapesFor(camera) {
+  const out = [];
+  for (const group of ["zones", "lines"]) {
+    for (const shape of state.all[group] || []) {
+      for (const part of shape.parts) {
+        if (part.camera !== camera) continue;
+        out.push({
+          kind: shape.kind,
+          name: shape.name,
+          part: shape.kind === "line" ? "" : (part.name || ""),
+          capacity: shape.capacity ?? null,
+          points: part.points.map((p) => [p[0], p[1]]),
+          existing: true,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+async function pick(camera) {
+  state.camera = camera;
+  state.shapes = shapesFor(camera);
+  state.selected = -1;
+  state.drawing = null;
+  await loadFrame();
+  renderAll();
+}
+
+function loadFrame(bust) {
+  return new Promise((resolve) => {
+    say("Taking a still from camera " + state.camera + "…");
+    shot.onload = () => {
+      // The canvas is sized to the image's own pixels so a normalised point
+      // lands where it will land on the real frame.
+      canvas.width = shot.naturalWidth;
+      canvas.height = shot.naturalHeight;
+      say("Camera " + state.camera + " · " + shot.naturalWidth + "×" + shot.naturalHeight, "ok");
+      draw();
+      resolve();
+    };
+    shot.onerror = () => {
+      canvas.width = 1280; canvas.height = 720;
+      say("No frame from camera " + state.camera + ". The stream may be down; you can still draw.", "err");
+      draw();
+      resolve();
+    };
+    shot.src = "frame?camera=" + encodeURIComponent(state.camera) + (bust ? "&t=" + Date.now() : "");
+  });
+}
+
+/* ------------------------------------------------------------ drawing -- */
+
+function colourOf(shape) {
+  return shape.kind === "line" ? "#fbbf24" : "#60a5fa";
+}
+
+function draw() {
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  // Scale strokes to the frame so a 1280x1440 camera does not get hairlines.
+  const unit = Math.max(1, Math.round(Math.min(w, h) / 480));
+
+  state.shapes.forEach((shape, index) => {
+    const chosen = index === state.selected;
+    const colour = colourOf(shape);
+    const points = shape.points;
+    if (!points.length) return;
+
+    ctx.beginPath();
+    points.forEach(([x, y], i) => {
+      const px = x * w, py = y * h;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    });
+    if (shape.kind === "polygon" && index !== state.drawing) ctx.closePath();
+
+    if (shape.kind === "polygon") {
+      ctx.fillStyle = chosen ? "rgba(96,165,250,0.22)" : "rgba(96,165,250,0.10)";
+      ctx.fill();
+    }
+    ctx.strokeStyle = colour;
+    ctx.lineWidth = unit * (chosen ? 2.4 : 1.6);
+    ctx.setLineDash(index === state.drawing ? [unit * 4, unit * 3] : []);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    if (chosen) {
+      points.forEach(([x, y]) => {
+        ctx.beginPath();
+        ctx.arc(x * w, y * h, HANDLE * unit * 0.6, 0, Math.PI * 2);
+        ctx.fillStyle = "#0b1210";
+        ctx.fill();
+        ctx.lineWidth = unit * 1.6;
+        ctx.strokeStyle = colour;
+        ctx.stroke();
+      });
+    }
+
+    const label = shape.part ? shape.name + "/" + shape.part : shape.name;
+    if (label) {
+      ctx.font = (11 * unit) + "px ui-monospace, monospace";
+      ctx.fillStyle = colour;
+      ctx.fillText(label, points[0][0] * w + 4 * unit, points[0][1] * h - 4 * unit);
+    }
+  });
+}
+
+/* ----------------------------------------------------------- geometry -- */
+
+function at(event) {
+  const rect = canvas.getBoundingClientRect();
+  return [
+    clamp((event.clientX - rect.left) / rect.width),
+    clamp((event.clientY - rect.top) / rect.height),
+  ];
+}
+
+const clamp = (v) => Math.min(1, Math.max(0, Math.round(v * 10000) / 10000));
+
+/** The handle under the pointer, if the selected shape has one there. */
+function handleAt(point) {
+  if (state.selected < 0) return null;
+  const rect = canvas.getBoundingClientRect();
+  const shape = state.shapes[state.selected];
+  for (let i = 0; i < shape.points.length; i++) {
+    const dx = (shape.points[i][0] - point[0]) * rect.width;
+    const dy = (shape.points[i][1] - point[1]) * rect.height;
+    if (Math.hypot(dx, dy) <= HIT) return i;
+  }
+  return null;
+}
+
+canvas.addEventListener("pointerdown", (event) => {
+  canvas.focus();
+  const point = at(event);
+
+  if (state.drawing !== null) {
+    const shape = state.shapes[state.drawing];
+    shape.points.push(point);
+    // A line is two points and then it is finished; nothing to decide.
+    if (shape.kind === "line" && shape.points.length === 2) finish();
+    return renderAll();
+  }
+
+  const handle = handleAt(point);
+  if (handle !== null) {
+    state.dragging = { shape: state.selected, point: handle };
+    $("frame").classList.add("dragging");
+    canvas.setPointerCapture(event.pointerId);
+    return;
+  }
+
+  // Selecting by clicking inside a polygon, or near a line.
+  const hit = shapeAt(point);
+  state.selected = hit;
+  renderAll();
+});
+
+canvas.addEventListener("pointermove", (event) => {
+  if (!state.dragging) return;
+  const point = at(event);
+  state.shapes[state.dragging.shape].points[state.dragging.point] = point;
+  draw();
+  writeYaml();
+});
+
+canvas.addEventListener("pointerup", () => {
+  if (!state.dragging) return;
+  state.dragging = null;
+  $("frame").classList.remove("dragging");
+  renderAll();
+});
+
+canvas.addEventListener("dblclick", (event) => {
+  event.preventDefault();
+  if (state.drawing !== null) finish();
+});
+
+/** The topmost shape under a point: inside a polygon, or on a line. */
+function shapeAt(point) {
+  const rect = canvas.getBoundingClientRect();
+  for (let i = state.shapes.length - 1; i >= 0; i--) {
+    const shape = state.shapes[i];
+    if (shape.kind === "polygon" && inside(point, shape.points)) return i;
+    if (shape.kind === "line" && shape.points.length === 2) {
+      const d = distanceToSegment(point, shape.points[0], shape.points[1], rect);
+      if (d <= HIT) return i;
+    }
+  }
+  return -1;
+}
+
+function inside([x, y], points) {
+  let hit = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const [xi, yi] = points[i], [xj, yj] = points[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) hit = !hit;
+  }
+  return hit;
+}
+
+function distanceToSegment(p, a, b, rect) {
+  const px = (v) => [v[0] * rect.width, v[1] * rect.height];
+  const [x, y] = px(p), [x1, y1] = px(a), [x2, y2] = px(b);
+  const dx = x2 - x1, dy = y2 - y1;
+  const len = dx * dx + dy * dy;
+  const t = len ? Math.max(0, Math.min(1, ((x - x1) * dx + (y - y1) * dy) / len)) : 0;
+  return Math.hypot(x - (x1 + t * dx), y - (y1 + t * dy));
+}
+
+/* -------------------------------------------------------------- edits -- */
+
+function begin(kind) {
+  const shape = {
+    kind,
+    name: kind === "line" ? "entrance" : "zone",
+    part: "",
+    capacity: null,
+    points: [],
+    existing: false,
+  };
+  state.shapes.push(shape);
+  state.selected = state.shapes.length - 1;
+  state.drawing = state.selected;
+  // Focus moves to the canvas, or Enter would re-fire the button that was
+  // just clicked instead of finishing the shape it started.
+  canvas.focus();
+  say(kind === "line"
+    ? "Click the two ends of the line."
+    : "Click each corner. Enter or double-click to close it.");
+  renderAll();
+}
+
+function finish() {
+  const shape = state.shapes[state.drawing];
+  const need = shape.kind === "line" ? 2 : 3;
+  if (shape.points.length < need) {
+    return say("A " + shape.kind + " needs at least " + need + " points.", "err");
+  }
+  state.drawing = null;
+  say("Shape finished. Name it, then copy the YAML.", "ok");
+  renderAll();
+}
+
+function remove() {
+  if (state.selected < 0) return;
+  state.shapes.splice(state.selected, 1);
+  if (state.drawing === state.selected) state.drawing = null;
+  state.selected = -1;
+  renderAll();
+}
+
+document.addEventListener("keydown", (event) => {
+  const tag = event.target.tagName;
+  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+  // A focused button would otherwise swallow Enter and re-run itself.
+  if (tag === "BUTTON" && event.key === "Enter" && state.drawing === null) return;
+  if (event.key === "Enter" && state.drawing !== null) { event.preventDefault(); finish(); }
+  else if (event.key === "Escape") { state.selected = -1; state.drawing = null; renderAll(); }
+  else if (event.key === "Backspace" && state.drawing !== null) {
+    event.preventDefault();
+    state.shapes[state.drawing].points.pop();
+    renderAll();
+  } else if (event.key === "Delete") { remove(); }
+});
+
+/* --------------------------------------------------------------- yaml -- */
+
+/** Groups the drawn shapes back into the shape cameras.yml expects. */
+function writeYaml() {
+  const zones = new Map(), lines = new Map();
+  for (const shape of state.shapes) {
+    if (shape.points.length < (shape.kind === "line" ? 2 : 3)) continue;
+    const target = shape.kind === "line" ? lines : zones;
+    if (!target.has(shape.name)) target.set(shape.name, []);
+    target.get(shape.name).push(shape);
+  }
+
+  const lead = (n) => " ".repeat(n);
+  const points = (list, indent) =>
+    "[" + list.map(([x, y]) => "[" + x.toFixed(2) + ", " + y.toFixed(2) + "]").join(", ") + "]";
+
+  const out = [];
+  out.push("# Only the shapes on camera " + state.camera + ". Merge this into");
+  out.push("# analytics/cameras.yml, then: docker compose restart analytics-api");
+
+  if (zones.size) {
+    out.push("", "zones:");
+    for (const [name, parts] of zones) {
+      out.push(lead(2) + name + ":");
+      const capacity = parts.find((p) => p.capacity)?.capacity;
+      if (capacity) out.push(lead(4) + "capacity: " + capacity);
+      out.push(lead(4) + "parts:");
+      for (const part of parts) {
+        out.push(lead(6) + "- camera: '" + state.camera + "'");
+        if (part.part) out.push(lead(8) + "name: " + part.part);
+        out.push(lead(8) + "points: " + points(part.points));
+      }
+    }
+  }
+  if (lines.size) {
+    out.push("", "lines:");
+    for (const [name, parts] of lines) {
+      out.push(lead(2) + name + ":");
+      out.push(lead(4) + "camera: '" + state.camera + "'");
+      // Two parallels, crossed in order. The first drawn is the outer one:
+      // outer then inner is somebody coming in.
+      const sides = ["outer", "inner"];
+      parts.slice(0, 2).forEach((part, i) => {
+        out.push(lead(4) + sides[i] + ": " + points(part.points));
+      });
+      if (parts.length === 1) {
+        out.push(lead(4) + "# inner: draw a second line - one line and a jittering");
+        out.push(lead(4) + "# box produce phantom crossings all day.");
+      }
+    }
+  }
+  if (!zones.size && !lines.size) out.push("", "# Nothing drawn yet.");
+  $("yaml").value = out.join("\n");
+}
+
+/* ------------------------------------------------------------ chrome -- */
+
+function renderAll() {
+  draw();
+  renderList();
+  renderFields();
+  writeYaml();
+  $("delete").disabled = state.selected < 0;
+}
+
+function renderList() {
+  const host = $("shapes");
+  host.innerHTML = "";
+  if (!state.shapes.length) {
+    host.innerHTML = '<p class="empty">No zones or lines on this camera yet.</p>';
+    return;
+  }
+  state.shapes.forEach((shape, index) => {
+    const row = document.createElement("button");
+    row.className = "shape";
+    row.setAttribute("aria-current", String(index === state.selected));
+    row.innerHTML =
+      '<span class="swatch" style="background:' + colourOf(shape) + '"></span>' +
+      "<span>" + (shape.part ? shape.name + " / " + shape.part : shape.name) +
+      (shape.existing ? "" : " *") + "</span>" +
+      '<span class="meta">' + shape.points.length + " pt</span>";
+    row.onclick = () => { state.selected = index; renderAll(); };
+    host.append(row);
+  });
+}
+
+function renderFields() {
+  const shape = state.shapes[state.selected];
+  $("name").value = shape ? shape.name : "";
+  $("part").value = shape ? shape.part : "";
+  $("capacity").value = shape && shape.capacity ? shape.capacity : "";
+  for (const id of ["name", "part", "capacity"]) $(id).disabled = !shape;
+  $("part").disabled = !shape || shape.kind === "line";
+  $("capacity").disabled = !shape || shape.kind === "line";
+}
+
+for (const [id, key] of [["name", "name"], ["part", "part"]]) {
+  $(id).addEventListener("input", (event) => {
+    if (state.selected < 0) return;
+    state.shapes[state.selected][key] = event.target.value.trim();
+    draw(); renderList(); writeYaml();
+  });
+}
+$("capacity").addEventListener("input", (event) => {
+  if (state.selected < 0) return;
+  const value = parseInt(event.target.value, 10);
+  state.shapes[state.selected].capacity = Number.isFinite(value) && value > 0 ? value : null;
+  writeYaml();
+});
+
+$("camera").addEventListener("change", (event) => void pick(event.target.value));
+$("reload").addEventListener("click", () => void loadFrame(true));
+$("new-zone").addEventListener("click", () => begin("polygon"));
+$("new-line").addEventListener("click", () => begin("line"));
+$("delete").addEventListener("click", remove);
+$("copy").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText($("yaml").value);
+    say("YAML copied.", "ok");
+  } catch {
+    $("yaml").select();
+    say("Select-all and copy: the clipboard needs a secure origin.", "err");
+  }
+});
+
+window.addEventListener("resize", draw);
+void boot();
+</script>
+</body>
+</html>
